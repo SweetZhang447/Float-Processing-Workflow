@@ -33,7 +33,6 @@
       "_comment_wmo": "WMO ID used for ARGO RT download URL and nc filenames",
       "wmo_id": "WMO NUMBER",
 
-      "_comment_broken": "0 = normal (read LGR_CP_PTSCI only), 1 = broken float (fallback to LGR_PTSCI + LGR_CP_PTSCI), used for known floats with LGR CP logging issues to generate intermediate nc files",
       "_comment_broken": "0 = normal (read LGR_CP_PTSCI only), 1 = broken float (fallback to LGR_PTSCI + LGR_CP_PTSCI)",
       "broken_float": 0,
 
