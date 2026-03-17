@@ -1,0 +1,109 @@
+{
+  "_comment": "ARGO Float Automated Workflow Configuration. Fill in all REPLACE_WITH_* fields before running.",
+
+  "output_base_dir": "C:\\Users\\szswe\\Desktop\\FLOAT_DATA",
+
+  "_comment_force_reprocess": "Set to true to regenerate all intermediate files even if they already exist (profile CSVs, .phy, .nc). Set to false to skip files that are already present.",
+  "force_reprocess": false,
+
+  "schedule": {
+    "_comment_frequency": "Options: daily, weekly, monthly",
+    "frequency": "daily",
+    "_comment_time": "24-hour format HH:MM UTC",
+    "time": "06:00"
+  },
+
+  "gmail": {
+    "_comment": "Download credentials.json from Google Cloud Console, token.json is auto-generated on first run.",
+    "credentials_file": "C:\\Users\\szswe\\Desktop\\claude_workflow_v1\\credentials.json",
+    "token_file": "C:\\Users\\szswe\\Desktop\\claude_workflow_v1\\token.json",
+    "_comment_grace": "Hours before current time to cut off downloads (avoids partial mid-transmission profiles)",
+    "grace_hours": 6
+  },
+
+  "floats": [
+    {
+      "_comment": "Example float entry — copy this block for each additional float",
+      "float_id": "F9184",
+      "imei": "300534060836190",
+      "_comment_aoml": "AOML ID used in .phy filename prefix (e.g. 9184)",
+      "aoml_id": "10407",
+
+      "_comment_wmo": "WMO ID used for ARGO RT download URL and nc filenames",
+      "wmo_id": "2904019",
+
+      "_comment_broken": "0 = normal (read LGR_CP_PTSCI only), 1 = broken float (fallback to LGR_PTSCI + LGR_CP_PTSCI)",
+      "broken_float": 0,
+
+      "_comment_url": "Base URL for real-time ARGO netcdf file download",
+      "argo_url": "https://data-argo.ifremer.fr/dac/aoml/2904019/profiles/",
+      
+      "_comment_meta": "Path to .meta file used by phy_parser; set to null to skip phy parsing for this float",
+      "meta_file": "C:\\Users\\szswe\\Desktop\\DMODE_processing\\all_data_files\\F9184\\10407_009184.meta",
+
+      "active": true
+    },
+    {
+      "float_id": "F9185",
+      "imei": "300534060832230",
+      "aoml_id": "10408",
+      "wmo_id": "4903903",
+      "broken_float": 0,
+      "argo_url": "https://data-argo.ifremer.fr/dac/aoml/4903903/profiles/",
+      "meta_file": "C:\\Users\\szswe\\Desktop\\DMODE_processing\\all_data_files\\F9185\\10408_009185.meta",
+      "active": true
+    },
+    {
+      "float_id": "F9186",
+      "imei": "300534060836350",
+      "aoml_id": "10409",
+      "wmo_id": "2904018",
+      "broken_float": 0,
+      "argo_url": "https://data-argo.ifremer.fr/dac/aoml/2904018/profiles/",
+      "meta_file": "C:\\Users\\szswe\\Desktop\\DMODE_processing\\all_data_files\\F9186\\10409_009186.meta",
+      "active": true
+    },
+    {
+      "float_id": "F9443",
+      "imei": "300534060831190",
+      "aoml_id": "10410",
+      "wmo_id": "7902322",
+      "broken_float": 0,
+      "argo_url": "https://data-argo.ifremer.fr/dac/aoml/7902322/profiles/",
+      "meta_file": "C:\\Users\\szswe\\Desktop\\DMODE_processing\\all_data_files\\F9443\\10410_009443.meta",
+      "active": true
+    },
+    {
+      "float_id": "F9444",
+      "imei": "300534061140530",
+      "aoml_id": "10411",
+      "wmo_id": "7902321",
+      "broken_float": 0,
+      "argo_url": "https://data-argo.ifremer.fr/dac/aoml/7902321/profiles/",
+      "meta_file": "C:\\Users\\szswe\\Desktop\\DMODE_processing\\all_data_files\\F9444\\10411_009444.meta",
+      "active": true
+    },
+    {
+      "float_id": "F10051",
+      "imei": "300534061046890",
+      "aoml_id": "9542",
+      "wmo_id": "1902655",
+      "_comment_broken": "broken_float=1: F10051 has RBR CP logging issues, fallback to LGR_PTSCI mode",
+      "broken_float": 0,
+      "argo_url": "https://data-argo.ifremer.fr/dac/aoml/1902655/profiles/",
+      "meta_file": "C:\\Users\\szswe\\Desktop\\DMODE_processing\\all_data_files\\F10051\\9542_010051.meta",
+      "active": true
+    },
+    {
+      "float_id": "F10052",
+      "imei": "300534062573580",
+      "aoml_id": "9543",
+      "wmo_id": "6990591",
+      "_comment_broken": "broken_float=1: F10052 has RBR CP logging issues, fallback to LGR_PTSCI mode",
+      "broken_float": 0,
+      "argo_url": "https://data-argo.ifremer.fr/dac/aoml/6990591/profiles/",
+      "meta_file": "C:\\Users\\szswe\\Desktop\\DMODE_processing\\all_data_files\\F10052\\9543_010052.meta",
+      "active": true
+    }
+  ]
+}
