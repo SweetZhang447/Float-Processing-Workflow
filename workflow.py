@@ -79,6 +79,36 @@ def load_config(config_path: str) -> dict:
 
 
 # ============================================================================
+# Reprocess setting parser
+# ============================================================================
+
+def _parse_reprocess_setting(setting) -> tuple:
+    """
+    Parse the config 'force_reprocess' value.
+
+    Returns (force_all: bool, specific_profiles: frozenset[int] | None):
+        (True,  None)      → reprocess everything  (config: true)
+        (False, None)      → skip existing files   (config: false, default)
+        (False, frozenset) → reprocess only listed profile numbers
+                             (config: "181" or "181-182")
+    """
+    if setting is True:
+        return True, None
+    if not setting:
+        return False, None
+    # String range: "181" or "181-182"
+    s = str(setting).strip()
+    try:
+        if '-' in s:
+            lo, hi = s.split('-', 1)
+            return False, frozenset(range(int(lo.strip()), int(hi.strip()) + 1))
+        else:
+            return False, frozenset({int(s)})
+    except ValueError:
+        return False, None
+
+
+# ============================================================================
 # Master status file
 # ============================================================================
 
@@ -139,19 +169,21 @@ def run_float_pipeline(
     gmail_client=None,
     dmode_tools_path: Optional[str] = None,
     force_reprocess: bool = False,
+    reprocess_profiles=None,
 ):
     """
     Run the full 7-step pipeline for one float.
 
     Args:
-        float_cfg:        Float config dict (from config.json floats[]).
-        gmail_cfg:        Gmail config dict (from config.json gmail).
-        output_base_dir:  Root output directory.
-        master_status:    Mutable master status dict (updated in-place).
-        run_time:         UTC datetime of this run (used for log filename).
-        gmail_client:     Optional pre-built GmailApi (shared auth across floats).
-        dmode_tools_path: Optional override for dmode_tools sys.path injection.
-        force_reprocess:  If True, regenerate all intermediate files even if they exist.
+        float_cfg:           Float config dict (from config.json floats[]).
+        gmail_cfg:           Gmail config dict (from config.json gmail).
+        output_base_dir:     Root output directory.
+        master_status:       Mutable master status dict (updated in-place).
+        run_time:            UTC datetime of this run (used for log filename).
+        gmail_client:        Optional pre-built GmailApi (shared auth across floats).
+        dmode_tools_path:    Optional override for dmode_tools sys.path injection.
+        force_reprocess:     If True, regenerate all intermediate files even if they exist.
+        reprocess_profiles:  frozenset of int profile numbers to reprocess, or None.
     """
     from modules.logger import FloatLogger
     from modules import sbd_downloader, sbd_converter, phy_parser
@@ -215,6 +247,7 @@ def run_float_pipeline(
         meta_file=meta_file if meta_file != "REPLACE_WITH_PATH_TO_META_FILE_OR_NULL" else None,
         logger=logger,
         force_reprocess=force_reprocess,
+        reprocess_profiles=reprocess_profiles,
     )
 
     for p in phy_result["errors"]:
@@ -236,6 +269,7 @@ def run_float_pipeline(
         broken_float=broken_float,
         logger=logger,
         force_reprocess=force_reprocess,
+        reprocess_profiles=reprocess_profiles,
     )
 
     # Update nc_parsing status for each profile using nc_csv_result directly.
@@ -288,6 +322,7 @@ def run_float_pipeline(
         wmo_id=wmo_id,
         logger=logger,
         force_reprocess=force_reprocess,
+        reprocess_profiles=reprocess_profiles,
     )
 
     _update_argo_rt_status(
@@ -330,7 +365,7 @@ def run_all(config_path: str):
 
     gmail_cfg = config.get("gmail", {})
     dmode_tools_path = config.get("dmode_tools_path", None)
-    force_reprocess = bool(config.get("force_reprocess", False))
+    force_reprocess, reprocess_profiles = _parse_reprocess_setting(config.get("force_reprocess", False))
     run_time = datetime.now(timezone.utc)
 
     master_status = load_master_status(output_base_dir)
@@ -366,6 +401,7 @@ def run_all(config_path: str):
             gmail_client=gmail_client,
             dmode_tools_path=dmode_tools_path,
             force_reprocess=force_reprocess,
+            reprocess_profiles=reprocess_profiles,
         )
         any_errors = any_errors or had_errors
 

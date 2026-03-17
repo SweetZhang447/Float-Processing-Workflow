@@ -3,7 +3,7 @@
 
   "output_base_dir": "C:\\Users\\szswe\\Desktop\\FLOAT_DATA",
 
-  "_comment_force_reprocess": "Controls reprocessing of existing intermediate files. false = skip existing; true = reprocess everything; '181' = reprocess only profile 181; '181-182' = reprocess profiles 181 through 182.",
+  "_comment_force_reprocess": "Controls reprocessing of existing intermediate files (profile CSVs, .phy, .nc). Options: false = skip existing files (default); true = reprocess all profiles; '181' = reprocess only profile 181; '181-182' = reprocess profiles 181 through 182 (inclusive).",
   "force_reprocess": false,
 
   "schedule": {
@@ -34,6 +34,7 @@
       "wmo_id": "WMO NUMBER",
 
       "_comment_broken": "0 = normal (read LGR_CP_PTSCI only), 1 = broken float (fallback to LGR_PTSCI + LGR_CP_PTSCI), used for known floats with LGR CP logging issues to generate intermediate nc files",
+      "_comment_broken": "0 = normal (read LGR_CP_PTSCI only), 1 = broken float (fallback to LGR_PTSCI + LGR_CP_PTSCI)",
       "broken_float": 0,
 
       "_comment_url": "Base URL for real-time ARGO netcdf file download",
