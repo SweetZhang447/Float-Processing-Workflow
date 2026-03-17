@@ -1,0 +1,9 @@
+# Ignore pycache
+./modules/__pycache__/*
+
+# Ignore config
+config.json
+
+# Ignore secrets
+credentials.json
+token.json
