@@ -23,14 +23,17 @@ Pipeline steps (per float):
     6. NC from ARGO       — ARGO_RT_NETCDF_FILES/ → DMODE/{float_id}_0/{float_id}_0_FROM_ARGO/
 
 All output under {output_base_dir}/{float_id}/.
-Master status tracked in {output_base_dir}/master_status.json.
+Per-float status tracked in {output_base_dir}/{float_id}/{float_id}_master_status.csv.
 Per-run timestamped log written to {output_base_dir}/{float_id}/Logs/.
 """
 
 import argparse
+import csv
 import json
 import os
+import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -41,9 +44,9 @@ from typing import Optional
 
 def _import_scheduler():
     try:
-        from apscheduler.schedulers.blocking import BlockingScheduler
+        from apscheduler.schedulers.background import BackgroundScheduler
         from apscheduler.triggers.cron import CronTrigger
-        return BlockingScheduler, CronTrigger
+        return BackgroundScheduler, CronTrigger
     except ImportError:
         print("ERROR: APScheduler not installed. Run: pip install apscheduler")
         sys.exit(1)
@@ -79,62 +82,226 @@ def load_config(config_path: str) -> dict:
 
 
 # ============================================================================
-# Reprocess setting parser
+# Force reprocess config parser
 # ============================================================================
 
-def _parse_reprocess_setting(setting) -> tuple:
+def _parse_force_reprocess_config(force_reprocess_cfg: object) -> set[str]:
     """
-    Parse the config 'force_reprocess' value.
+    Parse config:
+      "force_reprocess": { "FLOATS": [...] }
 
-    Returns (force_all: bool, specific_profiles: frozenset[int] | None):
-        (True,  None)      → reprocess everything  (config: true)
-        (False, None)      → skip existing files   (config: false, default)
-        (False, frozenset) → reprocess only listed profile numbers
-                             (config: "181" or "181-182")
+    Returns a set of float IDs to reprocess (all profiles).
     """
-    if setting is True:
-        return True, None
-    if not setting:
-        return False, None
-    # String range: "181" or "181-182"
-    s = str(setting).strip()
-    try:
-        if '-' in s:
-            lo, hi = s.split('-', 1)
-            return False, frozenset(range(int(lo.strip()), int(hi.strip()) + 1))
-        else:
-            return False, frozenset({int(s)})
-    except ValueError:
-        return False, None
+    if force_reprocess_cfg is None:
+        return set()
+
+    if isinstance(force_reprocess_cfg, bool):
+        raise ValueError(
+            "Boolean 'force_reprocess' is no longer supported. "
+            "Use an object: {\"FLOATS\": [..]}."
+        )
+
+    if not isinstance(force_reprocess_cfg, dict):
+        raise ValueError("force_reprocess must be an object with a 'FLOATS' list.")
+
+    floats = force_reprocess_cfg.get("FLOATS", [])
+    if not isinstance(floats, list):
+        raise ValueError("'FLOATS' must be a list in force_reprocess config.")
+
+    result: set[str] = set()
+    for float_id in floats:
+        if not isinstance(float_id, str) or not float_id.strip():
+            raise ValueError(f"Invalid float_id entry in force_reprocess.FLOATS: {float_id!r}")
+        result.add(float_id)
+
+    return result
 
 
 # ============================================================================
-# Master status file
+# Per-float status CSV helpers
 # ============================================================================
 
-def load_master_status(output_base_dir: str) -> dict:
-    path = os.path.join(output_base_dir, "master_status.json")
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            return json.load(f)
-    return {"last_sbd_download_date": None, "floats": {}}
+_PROFILE_PATTERNS = [
+    re.compile(r"-(\d{3})\.nc$", re.IGNORECASE),
+    re.compile(r"_(\d{3})\.nc$", re.IGNORECASE),
+    re.compile(r"_(\d{3})\.phy$", re.IGNORECASE),
+]
 
 
-def save_master_status(output_base_dir: str, status: dict):
-    path = os.path.join(output_base_dir, "master_status.json")
-    with open(path, "w") as f:
-        json.dump(status, f, indent=2)
+def _norm_profile_num(raw: str) -> Optional[str]:
+    s = str(raw).strip()
+    if not s:
+        return None
+    if s.isdigit():
+        return f"{int(s):03d}"
+    return None
 
 
-def _update_profile_status(master_status: dict, float_id: str, profile_num: str, step: str, result: str):
-    master_status["floats"].setdefault(float_id, {"profiles": {}, "argo_rt": {}})
-    master_status["floats"][float_id]["profiles"].setdefault(profile_num, {})
-    master_status["floats"][float_id]["profiles"][profile_num][step] = result
+def _profile_from_converter_tag(tag: str) -> Optional[str]:
+    s = str(tag)
+    if len(s) >= 12 and s[9:12].isdigit():
+        return s[9:12]
+    return _norm_profile_num(s)
 
 
-def _update_argo_rt_status(master_status: dict, float_id: str, key: str, value):
-    master_status["floats"].setdefault(float_id, {"profiles": {}, "argo_rt": {}})
-    master_status["floats"][float_id]["argo_rt"][key] = value
+def _profile_from_path(path: str) -> Optional[str]:
+    name = os.path.basename(str(path))
+    for pattern in _PROFILE_PATTERNS:
+        match = pattern.search(name)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _build_float_status_rows(
+    conv_result: dict,
+    phy_result: dict,
+    nc_csv_result: dict,
+    argo_dl_result: dict,
+    nc_argo_result: dict,
+) -> dict[str, dict[str, str]]:
+    rows: dict[str, dict[str, str]] = {}
+
+    def ensure_row(profile_num: str):
+        rows.setdefault(profile_num, {
+            "status_profiles": "",
+            "phy_files": "",
+            "argo_rt_netcdf_download": "",
+            "dmode_from_argo": "",
+            "dmode_from_profile": "",
+        })
+
+    for tag in conv_result.get("converted_profiles", []):
+        p = _profile_from_converter_tag(tag)
+        if p:
+            ensure_row(p)
+            rows[p]["status_profiles"] = "DONE"
+    for tag in conv_result.get("failed_profiles", []):
+        p = _profile_from_converter_tag(tag)
+        if p:
+            ensure_row(p)
+            rows[p]["status_profiles"] = "ERROR"
+
+    for phy_path in phy_result.get("phy_files", []):
+        p = _profile_from_path(phy_path)
+        if p:
+            ensure_row(p)
+            rows[p]["phy_files"] = "DONE"
+    for p in phy_result.get("errors", []):
+        p_norm = _norm_profile_num(p)
+        if p_norm:
+            ensure_row(p_norm)
+            rows[p_norm]["phy_files"] = "ERROR"
+
+    for nc_path in nc_csv_result.get("nc_files", []):
+        p = _profile_from_path(nc_path)
+        if p:
+            ensure_row(p)
+            rows[p]["dmode_from_profile"] = "DONE"
+    for p in nc_csv_result.get("errors", []):
+        p_norm = _norm_profile_num(p)
+        if p_norm:
+            ensure_row(p_norm)
+            rows[p_norm]["dmode_from_profile"] = "ERROR"
+
+    for pth in argo_dl_result.get("downloaded_files", []):
+        p = _profile_from_path(pth)
+        if p:
+            ensure_row(p)
+            rows[p]["argo_rt_netcdf_download"] = "DONE"
+    for pth in argo_dl_result.get("errors", []):
+        p = _profile_from_path(pth)
+        if p:
+            ensure_row(p)
+            rows[p]["argo_rt_netcdf_download"] = "ERROR"
+
+    for nc_path in nc_argo_result.get("nc_files", []):
+        p = _profile_from_path(nc_path)
+        if p:
+            ensure_row(p)
+            rows[p]["dmode_from_argo"] = "DONE"
+    for pth in nc_argo_result.get("errors", []):
+        p = _profile_from_path(pth)
+        if p:
+            ensure_row(p)
+            rows[p]["dmode_from_argo"] = "ERROR"
+
+    return rows
+
+
+def _append_float_status_csv(
+    float_dir: str,
+    float_id: str,
+    run_time: datetime,
+    sbd_result: dict,
+    conv_result: dict,
+    phy_result: dict,
+    nc_csv_result: dict,
+    argo_dl_result: dict,
+    nc_argo_result: dict,
+    force_reprocess: bool = False,
+):
+    all_status_rows = _build_float_status_rows(conv_result, phy_result, nc_csv_result, argo_dl_result, nc_argo_result)
+
+    if force_reprocess:
+        status_rows = all_status_rows
+        file_mode = "w"
+    else:
+        # Collect profile numbers that were actually newly processed this run.
+        new_profile_nums: set[str] = set()
+        for tag in conv_result.get("converted_profiles", []):
+            p = _profile_from_converter_tag(tag)
+            if p:
+                new_profile_nums.add(p)
+        for tag in conv_result.get("failed_profiles", []):
+            p = _profile_from_converter_tag(tag)
+            if p:
+                new_profile_nums.add(p)
+        for pth in argo_dl_result.get("new_files", []):
+            p = _profile_from_path(pth)
+            if p:
+                new_profile_nums.add(p)
+        for pth in argo_dl_result.get("errors", []):
+            p = _profile_from_path(pth)
+            if p:
+                new_profile_nums.add(p)
+
+        if not new_profile_nums:
+            return  # nothing new this run — don't write
+
+        status_rows = {p: all_status_rows[p] for p in new_profile_nums if p in all_status_rows}
+        file_mode = "a"
+
+    decoded_profiles = sorted(
+        p for p in (_profile_from_converter_tag(tag) for tag in conv_result.get("converted_profiles", [])) if p
+    )
+
+    out_path = os.path.join(float_dir, f"{float_id}_master_status.csv")
+    with open(out_path, file_mode, newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["RUN_UTC", run_time.strftime("%Y-%m-%dT%H:%M:%SZ")])
+        writer.writerow(["new_sbd_messages", str(len(sbd_result.get("new_sbd_files", [])))])
+        writer.writerow(["profiles_numbers_decoded", ";".join(decoded_profiles)])
+        writer.writerow([])
+        writer.writerow([
+            "profile_number",
+            "status_profiles",
+            "phy_files",
+            "argo_RT_netcdf_file_download_status",
+            "DMODE_from_argo",
+            "DMODE_from_profile",
+        ])
+        for p in sorted(status_rows.keys()):
+            row = status_rows[p]
+            writer.writerow([
+                p,
+                row["status_profiles"],
+                row["phy_files"],
+                row["argo_rt_netcdf_download"],
+                row["dmode_from_argo"],
+                row["dmode_from_profile"],
+            ])
+        writer.writerow([])
 
 
 # ============================================================================
@@ -164,12 +331,10 @@ def run_float_pipeline(
     float_cfg: dict,
     gmail_cfg: dict,
     output_base_dir: str,
-    master_status: dict,
     run_time: datetime,
     gmail_client=None,
     dmode_tools_path: Optional[str] = None,
     force_reprocess: bool = False,
-    reprocess_profiles=None,
 ):
     """
     Run the full 7-step pipeline for one float.
@@ -178,12 +343,10 @@ def run_float_pipeline(
         float_cfg:           Float config dict (from config.json floats[]).
         gmail_cfg:           Gmail config dict (from config.json gmail).
         output_base_dir:     Root output directory.
-        master_status:       Mutable master status dict (updated in-place).
         run_time:            UTC datetime of this run (used for log filename).
         gmail_client:        Optional pre-built GmailApi (shared auth across floats).
         dmode_tools_path:    Optional override for dmode_tools sys.path injection.
         force_reprocess:     If True, regenerate all intermediate files even if they exist.
-        reprocess_profiles:  frozenset of int profile numbers to reprocess, or None.
     """
     from modules.logger import FloatLogger
     from modules import sbd_downloader, sbd_converter, phy_parser
@@ -210,7 +373,6 @@ def run_float_pipeline(
         logger=logger,
         client=gmail_client,
     )
-    master_status["last_sbd_download_date"] = run_time.isoformat()
 
     # -------------------------------------------------------------------------
     # Step 2 & 3: SBD → Profiles (SBD_FILES → PROFILES; .gz and .bin deleted)
@@ -218,20 +380,19 @@ def run_float_pipeline(
     sbd_dir = os.path.join(float_dir, "SBD_FILES")
     profiles_dir = os.path.join(float_dir, "PROFILES")
 
-    conv_result = sbd_converter.run(
-        sbd_dir=sbd_dir,
-        profiles_dir=profiles_dir,
-        float_id=float_id,
-        logger=logger,
-        force_reprocess=force_reprocess,
-    )
-
-    # Update master status per profile
-    for p in conv_result["converted_profiles"]:
-        _update_profile_status(master_status, float_id, p, "profile_conversion", "success")
-    for p in conv_result["failed_profiles"]:
-        _update_profile_status(master_status, float_id, p, "profile_conversion",
-                               "failure: incomplete .gz (likely mid-transmission)")
+    _no_new_sbds = (sbd_result["n_downloaded"] == 0 and sbd_result["n_overwritten"] == 0)
+    if _no_new_sbds and not force_reprocess:
+        logger.info("PROFILE_CONVERSION", "No new SBD files downloaded — skipping profile conversion.")
+        logger.success("PROFILE_CONVERSION")
+        conv_result = {"converted_profiles": [], "failed_profiles": [], "new_profile_files": []}
+    else:
+        conv_result = sbd_converter.run(
+            sbd_dir=sbd_dir,
+            profiles_dir=profiles_dir,
+            float_id=float_id,
+            logger=logger,
+            force_reprocess=force_reprocess,
+        )
 
     # -------------------------------------------------------------------------
     # Step 4: PHY parsing (PROFILES → PHY_FILES)
@@ -247,12 +408,7 @@ def run_float_pipeline(
         meta_file=meta_file if meta_file != "REPLACE_WITH_PATH_TO_META_FILE_OR_NULL" else None,
         logger=logger,
         force_reprocess=force_reprocess,
-        reprocess_profiles=reprocess_profiles,
     )
-
-    for p in phy_result["errors"]:
-        _update_profile_status(master_status, float_id, p, "phy_parsing",
-                               "failure: see log for details")
 
     # -------------------------------------------------------------------------
     # Step 5: NC from CSV (PROFILES → DMODE/.../FROM_PROFILE)
@@ -269,23 +425,7 @@ def run_float_pipeline(
         broken_float=broken_float,
         logger=logger,
         force_reprocess=force_reprocess,
-        reprocess_profiles=reprocess_profiles,
     )
-
-    # Update nc_parsing status for each profile using nc_csv_result directly.
-    # nc_csv_result["nc_files"] contains paths like {wmo_id}-032.nc (3-digit profile nums).
-    # nc_csv_result["errors"] contains 3-digit profile number strings.
-    for nc_path in nc_csv_result["nc_files"]:
-        # Extract profile number from filename: 2904019-032.nc → "032"
-        basename = os.path.basename(nc_path)
-        try:
-            p = basename.split("-")[1].split(".nc")[0]
-            _update_profile_status(master_status, float_id, p, "nc_parsing", "success")
-        except (IndexError, ValueError):
-            pass
-    for p in nc_csv_result["errors"]:
-        _update_profile_status(master_status, float_id, p, "nc_parsing",
-                               "failure: see log for details")
 
     # -------------------------------------------------------------------------
     # Step 6: ARGO RT download (→ ARGO_RT_NETCDF_FILES)
@@ -300,11 +440,6 @@ def run_float_pipeline(
             wmo_id=wmo_id,
             logger=logger,
             force_reprocess=force_reprocess,
-        )
-        _update_argo_rt_status(master_status, float_id, "last_download_date", run_time.isoformat())
-        _update_argo_rt_status(
-            master_status, float_id, "download_status",
-            "success" if not argo_dl_result["errors"] else f"partial failure: {len(argo_dl_result['errors'])} file(s) failed"
         )
     else:
         logger.info("ARGO_DOWNLOAD", "No argo_url configured — skipping ARGO RT download.")
@@ -322,12 +457,6 @@ def run_float_pipeline(
         wmo_id=wmo_id,
         logger=logger,
         force_reprocess=force_reprocess,
-        reprocess_profiles=reprocess_profiles,
-    )
-
-    _update_argo_rt_status(
-        master_status, float_id, "nc_parsing",
-        "success" if not nc_argo_result["errors"] else f"failure: {nc_argo_result['errors']}"
     )
 
     # -------------------------------------------------------------------------
@@ -343,6 +472,18 @@ def run_float_pipeline(
     logger.info("OVERALL_SUMMARY", f"NC (from CSV) generated: {len(nc_csv_result['nc_files'])}")
     logger.info("OVERALL_SUMMARY", f"ARGO RT downloaded: {len(argo_dl_result['downloaded_files'])}")
     logger.info("OVERALL_SUMMARY", f"NC (from ARGO) generated: {len(nc_argo_result['nc_files'])}")
+    _append_float_status_csv(
+        float_dir=float_dir,
+        float_id=float_id,
+        run_time=run_time,
+        sbd_result=sbd_result,
+        conv_result=conv_result,
+        phy_result=phy_result,
+        nc_csv_result=nc_csv_result,
+        argo_dl_result=argo_dl_result,
+        nc_argo_result=nc_argo_result,
+        force_reprocess=force_reprocess,
+    )
 
     log_path = logger.write()
     print(f"  [LOG] {log_path}")
@@ -365,10 +506,13 @@ def run_all(config_path: str):
 
     gmail_cfg = config.get("gmail", {})
     dmode_tools_path = config.get("dmode_tools_path", None)
-    force_reprocess, reprocess_profiles = _parse_reprocess_setting(config.get("force_reprocess", False))
+    # Config-driven per-float reprocess set: force_reprocess.FLOATS
+    try:
+        force_reprocess_by_float = _parse_force_reprocess_config(config.get("force_reprocess"))
+    except ValueError as e:
+        print(f"ERROR: Invalid force_reprocess config: {e}")
+        sys.exit(1)
     run_time = datetime.now(timezone.utc)
-
-    master_status = load_master_status(output_base_dir)
 
     # Authenticate once and share client across all floats
     gmail_client = None
@@ -392,21 +536,19 @@ def run_all(config_path: str):
             continue
 
         print(f"\n{'='*60}\n  Float: {float_id}\n{'='*60}")
+        force_reprocess = float_id in force_reprocess_by_float
         had_errors = run_float_pipeline(
             float_cfg=float_cfg,
             gmail_cfg=gmail_cfg,
             output_base_dir=output_base_dir,
-            master_status=master_status,
             run_time=run_time,
             gmail_client=gmail_client,
             dmode_tools_path=dmode_tools_path,
             force_reprocess=force_reprocess,
-            reprocess_profiles=reprocess_profiles,
         )
         any_errors = any_errors or had_errors
 
-    save_master_status(output_base_dir, master_status)
-    print(f"\n[DONE] master_status.json updated at {output_base_dir}")
+    print(f"\n[DONE] Per-float status CSV files updated at {output_base_dir}")
 
     if any_errors:
         print("[DONE] Some floats had errors — check per-float logs for details.")
@@ -470,25 +612,33 @@ Examples:
         scheduler = BlockingScheduler(timezone="UTC")
 
         if frequency == "daily":
-            trigger = CronTrigger(hour=int(hour), minute=int(minute))
+            trigger = CronTrigger(hour=int(hour), minute=int(minute), timezone="UTC")
         elif frequency == "weekly":
-            trigger = CronTrigger(day_of_week="mon", hour=int(hour), minute=int(minute))
+            trigger = CronTrigger(day_of_week="mon", hour=int(hour), minute=int(minute), timezone="UTC")
         elif frequency == "monthly":
-            trigger = CronTrigger(day=1, hour=int(hour), minute=int(minute))
+            trigger = CronTrigger(day=1, hour=int(hour), minute=int(minute), timezone="UTC")
         else:
             print(f"ERROR: Unknown schedule frequency '{frequency}'. Use: daily, weekly, monthly.")
             sys.exit(1)
 
-        scheduler.add_job(run_all, trigger=trigger, args=[args.config], id="workflow")
+        # misfire_grace_time=3600: job still runs if the scheduler wakes up to 1 hour late
+        # (prevents "missed" on Windows thread scheduling delays or brief system hiccups)
+        scheduler.add_job(run_all, trigger=trigger, args=[args.config], id="workflow",
+                          misfire_grace_time=3600)
         print(f"[SCHEDULER] Scheduled {frequency} at {time_str} UTC. Press Ctrl+C to stop.")
-        print(f"[SCHEDULER] Next run: {scheduler.get_jobs()[0].next_run_time}")
+        next_run = getattr(scheduler.get_jobs()[0], 'next_run_time', '(will be calculated on start)')
+        print(f"[SCHEDULER] Next run: {next_run}")
 
         try:
             # Run immediately on startup, then hand off to scheduler
             print("[SCHEDULER] Running immediately on startup...")
             run_all(args.config)
             scheduler.start()
+            print("[SCHEDULER] Running. Press Ctrl+C to stop.")
+            while True:
+                time.sleep(1)
         except (KeyboardInterrupt, SystemExit):
+            scheduler.shutdown()
             print("\n[SCHEDULER] Stopped by user.")
         return
 

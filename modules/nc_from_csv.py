@@ -133,7 +133,7 @@ def run(
 
         nc_path = os.path.join(nc_dir, f"{float_num}-{int(profile_num):03}.nc")
         if os.path.exists(nc_path) and not force_reprocess:
-            logger.info("NC_FROM_CSV", f"Profile {profile_num}: already exists — skipping.")
+            logger.file_only("NC_FROM_CSV", f"Profile {profile_num}: already exists — skipping.")
             nc_files.append(nc_path)
             continue
 

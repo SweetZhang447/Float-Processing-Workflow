@@ -1,5 +1,6 @@
 # Ignore pycache
 ./modules/__pycache__/*
+.pytest_cache/*
 
 # Ignore config
 config.json

@@ -28,10 +28,10 @@ import builtins
 import glob
 import gzip
 import io
+import json
 import os
 import shutil
 import struct
-import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -490,18 +490,33 @@ def run(
     """
     os.makedirs(profiles_dir, exist_ok=True)
 
-    # Work in a temp directory so SBD_FILES is never touched
-    tmp_dir = tempfile.mkdtemp(prefix=f"workflow_{float_id}_")
+    # --- All early-exit checks happen BEFORE tmp_dir is created ---
+
+    # Check for SBD files
+    sbd_files = sorted(glob.glob(os.path.join(sbd_dir, '*.sbd')))
+    if not sbd_files:
+        logger.info("PROFILE_CONVERSION", "No .sbd files found in SBD_FILES — nothing to convert.")
+        logger.success("PROFILE_CONVERSION")
+        return {"converted_profiles": [], "failed_profiles": [], "new_profile_files": []}
+
+    # Early-exit: if SBD file set is unchanged since last conversion and not forcing, skip all temp work.
+    _sbd_state_file = os.path.join(profiles_dir, ".sbd_conversion_state.json")
+    current_sbd_names = [os.path.basename(f) for f in sbd_files]  # already sorted
+    if not force_reprocess and os.path.exists(_sbd_state_file):
+        with open(_sbd_state_file) as _f:
+            _last_state = json.load(_f)
+        if _last_state.get("processed_sbd_files") == current_sbd_names:
+            logger.info("PROFILE_CONVERSION", "No new SBD files since last conversion — skipping.")
+            logger.success("PROFILE_CONVERSION")
+            return {"converted_profiles": [], "failed_profiles": [], "new_profile_files": []}
+
+    # Past all early exits — now create tmp_dir and run conversion
+    tmp_dir = os.path.join(os.path.dirname(profiles_dir), "tmp_dir")
+    os.makedirs(tmp_dir, exist_ok=True)
     logger.info("PROFILE_CONVERSION", f"Working temp dir: {tmp_dir}")
 
     try:
         # Step 1: Copy .sbd files to temp dir (originals untouched)
-        sbd_files = glob.glob(os.path.join(sbd_dir, '*.sbd'))
-        if not sbd_files:
-            logger.info("PROFILE_CONVERSION", "No .sbd files found in SBD_FILES — nothing to convert.")
-            logger.success("PROFILE_CONVERSION")
-            return {"converted_profiles": [], "failed_profiles": [], "new_profile_files": []}
-
         for f in sbd_files:
             shutil.copy2(f, tmp_dir)
         logger.info("PROFILE_CONVERSION", f"Copied {len(sbd_files)} .sbd files to temp dir.")
@@ -519,14 +534,19 @@ def run(
         new_profile_files = []
         for ext in ('*.csv', '*.txt'):
             for src in glob.glob(os.path.join(tmp_dir, ext)):
-                dst = os.path.join(profiles_dir, os.path.basename(src))
+                src_basename = os.path.basename(src)
+                dst = os.path.join(profiles_dir, src_basename)
                 if os.path.exists(dst) and not force_reprocess:
-                    logger.info("PROFILE_CONVERSION", f"Skipping existing: {os.path.basename(src)}")
+                    logger.file_only("PROFILE_CONVERSION", f"Skipping existing: {src_basename}")
                     continue
                 shutil.move(src, dst)
-                new_profile_files.append(os.path.basename(src))
+                new_profile_files.append(src_basename)
 
         logger.info("PROFILE_CONVERSION", f"Moved {len(new_profile_files)} profile files to PROFILES/.")
+
+        # Save SBD state so subsequent runs can skip if no new files arrive
+        with open(_sbd_state_file, 'w') as _f:
+            json.dump({"processed_sbd_files": current_sbd_names}, _f)
 
         # Determine converted vs failed profile prefixes
         converted = [p for p, s in profile_status.items() if s == 'complete' and p not in failed_gz]
@@ -542,6 +562,7 @@ def run(
         }
 
     finally:
-        # Always clean up temp dir (any remaining .gz, .bin, .sbd copies)
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        logger.info("PROFILE_CONVERSION", "Temp dir cleaned up.")
+        # Clean up temp dir if it was created
+        if os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            logger.info("PROFILE_CONVERSION", "Temp dir cleaned up.")

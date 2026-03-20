@@ -67,7 +67,8 @@ def run(
 
     Returns:
         dict with keys:
-            downloaded_files (list of str — local paths of downloaded files)
+            downloaded_files (list of str — local paths of all files, including pre-existing)
+            new_files        (list of str — local paths of files downloaded this run only)
             errors           (list of str — URLs that failed to download)
     """
     os.makedirs(argo_nc_dir, exist_ok=True)
@@ -79,7 +80,7 @@ def run(
         res.raise_for_status()
     except requests.RequestException as e:
         logger.error("ARGO_DOWNLOAD", f"Failed to fetch directory listing: {e}")
-        return {"downloaded_files": [], "errors": [str(url)]}
+        return {"downloaded_files": [], "new_files": [], "errors": [str(url)]}
 
     soup = BeautifulSoup(res.text, "html.parser")
 
@@ -98,7 +99,7 @@ def run(
 
     if not download_links:
         logger.warning("ARGO_DOWNLOAD", "No matching profile links found. Check wmo_id and url in config.")
-        return {"downloaded_files": [], "errors": []}
+        return {"downloaded_files": [], "new_files": [], "errors": []}
 
     downloaded_files = []
     errors = []
@@ -108,7 +109,7 @@ def run(
     for full_url, filename in download_links:
         local_path = os.path.join(argo_nc_dir, filename)
         if os.path.exists(local_path) and not force_reprocess:
-            logger.info("ARGO_DOWNLOAD", f"Skipping existing: {filename}")
+            logger.file_only("ARGO_DOWNLOAD", f"Skipping existing: {filename}")
             downloaded_files.append(local_path)
         else:
             links_to_download.append((full_url, filename))
@@ -116,8 +117,9 @@ def run(
     if not links_to_download:
         logger.info("ARGO_DOWNLOAD", f"All {len(downloaded_files)} file(s) already present — nothing to download.")
         logger.success("ARGO_DOWNLOAD")
-        return {"downloaded_files": downloaded_files, "errors": []}
+        return {"downloaded_files": downloaded_files, "new_files": [], "errors": []}
 
+    new_files = []
     with ProcessPoolExecutor() as executor:
         futures = {
             executor.submit(_download_file, full_url, argo_nc_dir, filename): (full_url, filename)
@@ -127,12 +129,13 @@ def run(
             try:
                 local_path = future.result()
                 downloaded_files.append(local_path)
+                new_files.append(local_path)
             except Exception as e:
                 errors.append(full_url)
                 logger.error("ARGO_DOWNLOAD", f"Failed to download {filename}: {e}")
 
-    logger.info("ARGO_DOWNLOAD", f"Downloaded: {len(downloaded_files)}, Failed: {len(errors)}")
+    logger.info("ARGO_DOWNLOAD", f"Downloaded: {len(new_files)}, Failed: {len(errors)}")
     if not errors:
         logger.success("ARGO_DOWNLOAD")
 
-    return {"downloaded_files": downloaded_files, "errors": errors}
+    return {"downloaded_files": downloaded_files, "new_files": new_files, "errors": errors}

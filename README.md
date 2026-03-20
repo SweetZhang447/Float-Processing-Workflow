@@ -24,10 +24,10 @@ Steps 1–5 run for each float using SBD telemetry. Steps 6–7 run in parallel 
 
 ```
 {output_base_dir}/
-├── master_status.json              ← high-level status for all floats and profiles
 ├── F9184/
 │   ├── Logs/
 │   │   └── F9184_20260316T060000.log   ← timestamped log per run
+│   ├── F9184_master_status.csv     ← appended per-run profile status summary
 │   ├── SBD_FILES/                  ← original .sbd and .sts files (never modified)
 │   ├── PROFILES/                   ← science_log.csv, vitals_log.csv, system_log.txt
 │   ├── PHY_FILES/                  ← .phy files
@@ -40,29 +40,38 @@ Steps 1–5 run for each float using SBD telemetry. Steps 6–7 run in parallel 
 │   └── ...
 ```
 
-`master_status.json` provides a quick high-level view of every float and profile without reading individual logs:
+---
 
-```json
-{
-  "last_sbd_download_date": "2026-03-16T06:00:00Z",
-  "floats": {
-    "F9184": {
-      "profiles": {
-        "001": {
-          "sbd_download": "success",
-          "profile_conversion": "success",
-          "phy_parsing": "success",
-          "nc_parsing": "success"
-        }
-      },
-      "argo_rt": {
-        "last_download_date": "2026-03-16T06:00:00Z",
-        "nc_parsing": "success"
-      }
-    }
-  }
-}
-```
+## State Files
+
+Two JSON state files are written automatically to track pipeline progress across runs:
+
+| File | Location | Managed by |
+|------|----------|------------|
+| `{IMEI}_{float_id}_state.json` | `SBD_FILES/` | `sbd_downloader` |
+| `.sbd_conversion_state.json` | `PROFILES/` | `sbd_converter` |
+
+**`{IMEI}_{float_id}_state.json`** — Gmail download cache. Stores every Gmail message ID that has already been downloaded as an `.sbd` file, the date used as the `after:` bound for the next Gmail query, and the timestamp of the last run. On each run, only emails whose ID is not already in this file are downloaded — prevents re-downloading the same SBD twice.
+
+**`.sbd_conversion_state.json`** — Conversion skip-cache. Stores the sorted list of `.sbd` filenames that were processed on the last conversion run. If the current SBD file list matches exactly, conversion is skipped entirely (no temp directory, no parsing). Bypassed when `force_reprocess` is set for that float.
+
+Deleting either file is safe — the next run will re-query or re-convert from scratch without data loss.
+
+---
+
+`{float_id}_master_status.csv` is created in each float directory on first run and appended on each subsequent run.
+Each run section includes:
+
+- `new_sbd_messages`
+- `profiles_numbers_decoded`
+- one row per profile with step-level status columns:
+  - `status_profiles`
+  - `phy_files`
+  - `argo_RT_netcdf_file_download_status`
+  - `DMODE_from_argo`
+  - `DMODE_from_profile`
+
+Values are simple `DONE` or `ERROR`.
 
 ---
 
@@ -91,6 +100,7 @@ Open `config.json` and fill in all `REPLACE_WITH_*` fields:
 | `gmail.credentials_file` | Path to `credentials.json` downloaded from Google Cloud Console |
 | `gmail.token_file` | Path where `token.json` will be saved (auto-generated on first auth) |
 | `gmail.grace_hours` | Hours before now to cut off downloads (default `6`; avoids mid-transmission partial profiles) |
+| `force_reprocess` | Object config for targeted reprocessing. Format: `{ "FLOATS": [...] }`. All profiles are reprocessed for every float listed. Leave `FLOATS` empty (`[]`) to skip forced reprocessing. |
 | `floats[].float_id` | Internal float ID (e.g. `"F9184"`) |
 | `floats[].imei` | 15-digit Iridium IMEI number |
 | `floats[].aoml_id` | AOML internal ID number (e.g. `"9542"`) — used in `.phy` filename prefix |
@@ -101,6 +111,14 @@ Open `config.json` and fill in all `REPLACE_WITH_*` fields:
 | `floats[].active` | `true` to include this float in automated runs; `false` to skip |
 
 To add more floats, copy the float entry block and fill in the fields.
+
+Example `force_reprocess`:
+
+```json
+"force_reprocess": {
+  "FLOATS": ["F9184", "F9185"]
+}
+```
 
 **Optional:** Add `"dmode_tools_path"` at the top level if dmode_tools is not at the default location:
 
@@ -201,7 +219,7 @@ The downloader tracks the sequence of SBD message numbers (MOMSN) in `SBD_FILES/
 [INFO]  Gaps may be files still in-transit; they will be caught on the next run if received.
 ```
 
-Gaps that result in an undecodable profile will show up as a `profile_conversion: failure` in `master_status.json`. **No automatic recovery is attempted** — manual follow-up with the data provider is required for truly lost transmissions. The log provides the MOMSN range to report.
+Gaps that result in an undecodable profile will show up as `ERROR` in the per-float `{float_id}_master_status.csv` under `status_profiles`. **No automatic recovery is attempted** — manual follow-up with the data provider is required for truly lost transmissions. The log provides the MOMSN range to report.
 
 ---
 
@@ -243,8 +261,8 @@ The bin-averaging code for broken float data (scipy `binned_statistic`, 2 DBAR b
 **`meta_file not found`**
 → Check the `meta_file` path in `config.json` for the affected float, or set it to `null` to skip PHY parsing.
 
-**Profile shows `profile_conversion: failure` in master_status.json**
-→ Check the Logs folder for that float. Most likely an incomplete `.gz` (mid-transmission). It will be retried automatically on the next run when more SBD files arrive. If the gap persists, check the MOMSN gap report in the SBD_DOWNLOAD section of the log.
+**Profile shows `ERROR` in `{float_id}_master_status.csv`**
+→ Check the Logs folder for that float to identify the failing step and error details. For profile conversion failures, the most likely cause is an incomplete `.gz` (mid-transmission). It will be retried automatically on the next run when more SBD files arrive. If the gap persists, check the MOMSN gap report in the SBD_DOWNLOAD section of the log.
 
 **`broken_float` profiles have very few data points**
 → Set `"broken_float": 1` in `config.json` for that float to switch to LGR_PTSCI fallback mode.

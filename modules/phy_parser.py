@@ -168,7 +168,8 @@ def _getMETAInfo(meta_file: str, float_dict_info: dict):
             if 'NUMBER OK LAUNCH VACUUM (dbar)' in line:
                 result = float(line.split()[-1]) * 2.953
                 float_dict_info.update({"NUMBER OK LAUNCH VACUUM (COUNTS)": round(result, 4)})
-
+            if 'PI' == line.split()[0]:
+                float_dict_info.update({"PI": " ".join(line.split()[1:])})
 
 def _getTXTInfo(txt_file: str, float_dict_info: dict, buoyancy_pump_on_time: float):
     prev_line = []
@@ -465,12 +466,9 @@ def _generate_phy_file(
     float_dict_info = copy.deepcopy(_FLOAT_DICT_TEMPLATE)
     float_dict_info["PROFILE NUMBER"] = profile_num
 
-    latitude = '+XXX.XXX'
-    longitude = '-XXX.XXX'
     date = "YEAR/MO/DT"
     timestamp = "HR:MN:SC"
     xmits = 'N/A'
-    sat = 'N/A'
     pos_qc = '0'
     buoyancy_pump_on_time = 0
     RBR_response_timeout_err = False  # initialized before loop (fix for original undefined reference)
@@ -669,7 +667,7 @@ def run(
         profile_num = tag[9:12]
         phy_path = os.path.join(phy_dir, f"{phy_prefix}_{profile_num}.phy")
         if os.path.exists(phy_path) and not force_reprocess:
-            logger.info("PHY_PARSING", f"Profile {profile_num}: already exists — skipping.")
+            logger.file_only("PHY_PARSING", f"Profile {profile_num}: already exists — skipping.")
             phy_files.append(phy_path)
             continue
         try:

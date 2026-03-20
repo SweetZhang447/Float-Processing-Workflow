@@ -66,6 +66,10 @@ class FloatLogger:
         self._append(section, f"[ERROR] {message}")
         self._py_logger.error("[%s] %s", section, message)
 
+    def file_only(self, section: str, message: str):
+        """Record to log file only — not printed to console."""
+        self._append(section, f"[INFO]  {message}")
+
     def success(self, section: str):
         """Mark a section as having no errors (called when section completes cleanly)."""
         if not self._sections[section]:

@@ -88,7 +88,7 @@ def run(
             nc_path = None
 
         if nc_path and os.path.exists(nc_path) and not force_reprocess:
-            logger.info("NC_FROM_ARGO", f"{fname}: already exists — skipping.")
+            logger.file_only("NC_FROM_ARGO", f"{fname}: already exists — skipping.")
             nc_output_files.append(nc_path)
             continue
 
