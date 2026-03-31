@@ -7,7 +7,7 @@ Key changes vs. original:
   - Exposes run() function returning structured result dict.
   - Integrates with FloatLogger for error logging.
   - Per-profile try/except: errors logged, processing continues to next profile.
-  - sys.path.insert used to import to_julian_day and make_nc_file_origin from dmode_tools/tools.py.
+  - to_julian_day and make_nc_file_origin imported via modules.dmode_tools.
 
 Original logic preserved verbatim:
   - broken_float flag: 0 = LGR_CP_PTSCI only, 1 = LGR_PTSCI + LGR_CP_PTSCI during ASCENT.
@@ -18,51 +18,27 @@ Original logic preserved verbatim:
   - Fallback JULD logic: CP started → Surface Mission → first PTSCI timestamp → np.nan.
   - conductivity scaling: cndc / 10.
   - make_nc_file_origin() called from dmode_tools; output: {float_num}-{profile_num:03}.nc.
-
-NOTE: tools.py (and make_nc_file_origin from make_origin_nc_files.py) must be importable
-from the path configured in DMODE_TOOLS_PATH below or in config.json under dmode_tools_path.
 """
 
 import copy
 import csv
 import glob
 import os
-import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
+from typing import Callable, TypedDict
+import gsw
 import numpy as np
 
 from modules.logger import FloatLogger
-
-# ============================================================================
-# dmode_tools import — sys.path injection
-# ============================================================================
-
-# Default path to dmode_tools. Can be overridden at runtime via _configure_dmode_path().
-_DMODE_TOOLS_PATH: Optional[str] = r"C:\Users\szswe\Desktop\DMODE_processing\dmode_tools"
+from modules.dmode_tools import to_julian_day, make_nc_file_origin
 
 
-def _configure_dmode_path(path: str):
-    """Call from workflow.py with the dmode_tools directory path if it differs from default."""
-    global _DMODE_TOOLS_PATH
-    _DMODE_TOOLS_PATH = path
 
-
-def _ensure_dmode_imported():
-    """Inject dmode_tools into sys.path and return (to_julian_day, make_nc_file_origin)."""
-    if _DMODE_TOOLS_PATH and _DMODE_TOOLS_PATH not in sys.path:
-        sys.path.insert(0, _DMODE_TOOLS_PATH)
-    try:
-        from tools import to_julian_day  # noqa: F401
-        from make_origin_nc_files import make_nc_file_origin  # noqa: F401
-        return to_julian_day, make_nc_file_origin
-    except ImportError as e:
-        raise ImportError(
-            f"Could not import from dmode_tools at '{_DMODE_TOOLS_PATH}': {e}\n"
-            "Set 'dmode_tools_path' in config.json to the correct path."
-        ) from e
+class NcCsvResult(TypedDict):
+    nc_files: list[str]
+    errors: list[str]
 
 
 # ============================================================================
@@ -76,7 +52,7 @@ def run(
     broken_float: int,
     logger: FloatLogger,
     force_reprocess: bool = False,
-) -> dict:
+) -> NcCsvResult:
     """
     Parse profile CSV/TXT files to intermediate netCDF format.
 
@@ -93,12 +69,6 @@ def run(
             nc_files (list of str — paths of generated .nc files)
             errors   (list of str — profile numbers that failed)
     """
-    try:
-        to_julian_day, make_nc_file_origin = _ensure_dmode_imported()
-    except ImportError as e:
-        logger.error("NC_FROM_CSV", str(e))
-        return {"nc_files": [], "errors": []}
-
     os.makedirs(nc_dir, exist_ok=True)
 
     # Group files by profile number (chars 9-12 of filename)
@@ -164,8 +134,8 @@ def _process_profile(
     nc_dir: str,
     float_num: str,
     broken_float: int,
-    to_julian_day,
-    make_nc_file_origin,
+    to_julian_day: Callable,
+    make_nc_file_origin: Callable,
     logger: FloatLogger,
 ) -> str:
     """
@@ -282,7 +252,7 @@ def _process_profile(
     PTSCI_timestamps.reverse()
 
     # # bin avg data according to pressure - bin size is 2DBAR
-    # this is code to bin avg broken float data for F10051
+    # this is code to bin avg broken float data 
     # bin_edges = np.arange(np.nanmin(pressures), np.nanmax(pressures) + 2, 2)
     # pres_binned = stats.binned_statistic(pressures, pressures, 'mean', bins=bin_edges).statistic
     # temp_binned = stats.binned_statistic(pressures, temps, 'mean', bins=bin_edges).statistic
@@ -302,7 +272,8 @@ def _process_profile(
 
     PTSCI_timestamps = np.asarray(PTSCI_timestamps)
     TEMP_ADJUSTED = np.asarray(copy.deepcopy(temps))
-    PSAL_ADJUSTED = np.asarray(copy.deepcopy(sals))
+    # PSAL_ADJUSTED = np.asarray(copy.deepcopy(sals))
+    PSAL_ADJUSTED = np.asarray(gsw.SP_from_C(cndc, temps, pressures))
     cndc = np.asarray(cndc) / 10  # conductivity scaling
 
     # ---- Build PRES_ADJUSTED and write .nc ----

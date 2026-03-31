@@ -26,6 +26,22 @@ All output under {output_base_dir}/{float_id}/.
 Per-float status tracked in {output_base_dir}/{float_id}/{float_id}_master_status.csv.
 Per-run timestamped log written to {output_base_dir}/{float_id}/Logs/.
 """
+"""
+SWEET ZHANG TODO:
+- THOUGHTS: Broad exception catching — 16+ except Exception as e: blocks. 
+---> Catching specific exceptions (IOError, ValueError, struct.error): distinguish expected vs. unexpected failures.
+- datetime.utcnow() deprecation — (deprecated in Python 3.12).
+---> Standardize on datetime.now(timezone.utc)
+- Add a startup dependency check so missing packages (e.g., netCDF4, gsw) fail fast with a clear message rather than mid-pipeline
+- Log skipped/dropped records during CSV parsing (currently silent)
+- Add a --dry-run flag for previewing what would be processed
+- Unbounded log accumulation
+Log files in {float_dir}/Logs/ are never rotated or cleaned. Over years of daily runs, this directory will grow without limit.
+--> Delete every X days
+- No health check or alerting
+There is no outbound notification (email, webhook, etc.) when a run completes with errors. The only output is a log file that must be manually inspected.
+
+"""
 
 import argparse
 import csv
@@ -36,7 +52,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # ============================================================================
 # Lazy imports (deferred so --setup-gmail-auth doesn't need APScheduler etc.)
@@ -66,7 +82,7 @@ def load_config(config_path: str) -> dict:
     return {k: v for k, v in raw.items() if not k.startswith("_")}
 
 
-def _strip_comments(obj):
+def _strip_comments(obj: Any) -> Any:
     """Recursively remove keys starting with '_comment' from config dicts."""
     if isinstance(obj, dict):
         return {k: _strip_comments(v) for k, v in obj.items() if not k.startswith("_")}
@@ -240,7 +256,7 @@ def _append_float_status_csv(
     argo_dl_result: dict,
     nc_argo_result: dict,
     force_reprocess: bool = False,
-):
+) -> None:
     all_status_rows = _build_float_status_rows(conv_result, phy_result, nc_csv_result, argo_dl_result, nc_argo_result)
 
     if force_reprocess:
@@ -308,7 +324,7 @@ def _append_float_status_csv(
 # Directory setup
 # ============================================================================
 
-def _ensure_float_dirs(float_dir: str, float_id: str):
+def _ensure_float_dirs(float_dir: str, float_id: str) -> None:
     """Create all required subdirectories under the float's output directory."""
     subdirs = [
         "Logs",
@@ -333,9 +349,8 @@ def run_float_pipeline(
     output_base_dir: str,
     run_time: datetime,
     gmail_client=None,
-    dmode_tools_path: Optional[str] = None,
     force_reprocess: bool = False,
-):
+) -> bool:
     """
     Run the full 7-step pipeline for one float.
 
@@ -345,7 +360,6 @@ def run_float_pipeline(
         output_base_dir:     Root output directory.
         run_time:            UTC datetime of this run (used for log filename).
         gmail_client:        Optional pre-built GmailApi (shared auth across floats).
-        dmode_tools_path:    Optional override for dmode_tools sys.path injection.
         force_reprocess:     If True, regenerate all intermediate files even if they exist.
     """
     from modules.logger import FloatLogger
@@ -358,10 +372,6 @@ def run_float_pipeline(
 
     logger = FloatLogger(float_id=float_id, float_dir=float_dir, run_time=run_time)
     logger.info("OVERALL_SUMMARY", f"Pipeline started for {float_id} at {run_time.isoformat()}Z")
-
-    # Configure dmode_tools path if specified in config
-    if dmode_tools_path:
-        nc_from_csv._configure_dmode_path(dmode_tools_path)
 
     # -------------------------------------------------------------------------
     # Step 1: SBD Download
@@ -495,7 +505,7 @@ def run_float_pipeline(
 # Main orchestrator
 # ============================================================================
 
-def run_all(config_path: str):
+def run_all(config_path: str) -> None:
     """Run the full pipeline for all active floats in config."""
     from modules.logger import setup_console_logging
     setup_console_logging()
@@ -505,7 +515,6 @@ def run_all(config_path: str):
     os.makedirs(output_base_dir, exist_ok=True)
 
     gmail_cfg = config.get("gmail", {})
-    dmode_tools_path = config.get("dmode_tools_path", None)
     # Config-driven per-float reprocess set: force_reprocess.FLOATS
     try:
         force_reprocess_by_float = _parse_force_reprocess_config(config.get("force_reprocess"))
@@ -543,7 +552,6 @@ def run_all(config_path: str):
             output_base_dir=output_base_dir,
             run_time=run_time,
             gmail_client=gmail_client,
-            dmode_tools_path=dmode_tools_path,
             force_reprocess=force_reprocess,
         )
         any_errors = any_errors or had_errors
@@ -560,7 +568,7 @@ def run_all(config_path: str):
 # Entry point
 # ============================================================================
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="ARGO Float Automated Processing Pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,

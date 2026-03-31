@@ -51,26 +51,26 @@ class FloatLogger:
     # Public API
     # ------------------------------------------------------------------
 
-    def info(self, section: str, message: str):
+    def info(self, section: str, message: str) -> None:
         """Record an informational message under a section."""
         self._append(section, f"[INFO]  {message}")
         self._py_logger.info("[%s] %s", section, message)
 
-    def warning(self, section: str, message: str):
+    def warning(self, section: str, message: str) -> None:
         """Record a warning under a section."""
         self._append(section, f"[WARN]  {message}")
         self._py_logger.warning("[%s] %s", section, message)
 
-    def error(self, section: str, message: str):
+    def error(self, section: str, message: str) -> None:
         """Record an error under a section."""
         self._append(section, f"[ERROR] {message}")
         self._py_logger.error("[%s] %s", section, message)
 
-    def file_only(self, section: str, message: str):
+    def file_only(self, section: str, message: str) -> None:
         """Record to log file only — not printed to console."""
         self._append(section, f"[INFO]  {message}")
 
-    def success(self, section: str):
+    def success(self, section: str) -> None:
         """Mark a section as having no errors (called when section completes cleanly)."""
         if not self._sections[section]:
             self._append(section, "[INFO]  success")
@@ -122,13 +122,13 @@ class FloatLogger:
     # Internal
     # ------------------------------------------------------------------
 
-    def _append(self, section: str, message: str):
+    def _append(self, section: str, message: str) -> None:
         if section not in self._sections:
             raise ValueError(f"Unknown log section '{section}'. Valid sections: {SECTIONS}")
         self._sections[section].append(message)
 
 
-def setup_console_logging(level: int = logging.INFO):
+def setup_console_logging(level: int = logging.INFO) -> None:
     """Configure root logger to print to console. Call once at startup."""
     logging.basicConfig(
         level=level,

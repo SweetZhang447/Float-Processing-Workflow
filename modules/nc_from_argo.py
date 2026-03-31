@@ -8,7 +8,7 @@ Key changes vs. original:
   - Integrates with FloatLogger for error logging.
   - Per-file try/except: errors (KeyError, IndexError, ValueError, etc.) are logged
     and processing continues to the next file.
-  - sys.path injection to import make_nc_file_origin from dmode_tools.
+  - make_nc_file_origin imported via modules.dmode_tools.
 
 Original logic preserved verbatim:
   - All ARGO variables read: PRES, TEMP, PSAL, CNDC, TEMP_CNDC, NB_SAMPLE_CTD,
@@ -22,15 +22,20 @@ Original logic preserved verbatim:
 
 import glob
 import os
-import sys
 from pathlib import Path
-from typing import Optional
 
+from typing import Callable, TypedDict
 import netCDF4 as nc4
 import numpy as np
 
 from modules.logger import FloatLogger
-from modules.nc_from_csv import _configure_dmode_path, _ensure_dmode_imported
+from modules.dmode_tools import make_nc_file_origin
+
+
+
+class NcArgoResult(TypedDict):
+    nc_files: list[str]
+    errors: list[str]
 
 
 # ============================================================================
@@ -43,7 +48,7 @@ def run(
     wmo_id: str,
     logger: FloatLogger,
     force_reprocess: bool = False,
-) -> dict:
+) -> NcArgoResult:
     """
     Parse real-time ARGO netCDF profile files to intermediate netCDF format.
 
@@ -59,12 +64,6 @@ def run(
             nc_files (list of str — paths of generated .nc files)
             errors   (list of str — filenames that failed)
     """
-    try:
-        _, make_nc_file_origin = _ensure_dmode_imported()
-    except ImportError as e:
-        logger.error("NC_FROM_ARGO", str(e))
-        return {"nc_files": [], "errors": []}
-
     os.makedirs(nc_dir, exist_ok=True)
 
     nc_input_files = glob.glob(os.path.join(argo_nc_dir, "*.nc"))
@@ -110,7 +109,7 @@ def run(
 # Internal: single file processing (verbatim from read_argo_nc_files)
 # ============================================================================
 
-def _qc_array(raw_qc, reference_shape):
+def _qc_array(raw_qc: "np.ndarray", reference_shape: tuple) -> "np.ndarray":
     """
     Squeeze and validate a QC array. Returns integer QC array or zeros if
     array is size 0 or 1 (missing or scalar placeholder).
@@ -122,7 +121,7 @@ def _qc_array(raw_qc, reference_shape):
     return np.asarray([int(x) for x in squeezed])
 
 
-def _process_argo_nc(file: str, nc_dir: str, float_num: str, make_nc_file_origin) -> str:
+def _process_argo_nc(file: str, nc_dir: str, float_num: str, make_nc_file_origin: Callable) -> str:
     """
     Process one ARGO real-time .nc file and write an intermediate .nc file.
     Returns the path to the generated .nc file.

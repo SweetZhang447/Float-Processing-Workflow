@@ -34,9 +34,16 @@ import shutil
 import struct
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TypedDict
 
 from modules.logger import FloatLogger
+
+
+
+class SbdConverterResult(TypedDict):
+    converted_profiles: list[str]
+    failed_profiles: list[str]
+    new_profile_files: list[str]
 
 
 # ============================================================================
@@ -47,7 +54,7 @@ WITH_ID = True
 WITHOUT_ID = False
 
 
-def _get_byte(byte):
+def _get_byte(byte: object) -> int:
     try:
         return ord(byte)
     except TypeError:
@@ -63,17 +70,17 @@ def _unpack_with_final_asciiz(fmt, dat):
     return (record[0], record[1].decode())
 
 
-def _ts_str(ts):
+def _ts_str(ts: float) -> str:
     return time.strftime('%Y%m%dT%H%M%S', time.gmtime(ts))
 
 
-def _f0_str(val): return '%0.0f' % val
-def _f1_str(val): return '%0.1f' % val
-def _f2_str(val): return '%0.2f' % val
-def _f3_str(val): return '%0.3f' % val
-def _f4_str(val): return '%0.4f' % val
-def _f5_str(val): return '%0.5f' % val
-def _f6_str(val): return '%0.6f' % val
+def _f0_str(val: float) -> str: return '%0.0f' % val
+def _f1_str(val: float) -> str: return '%0.1f' % val
+def _f2_str(val: float) -> str: return '%0.2f' % val
+def _f3_str(val: float) -> str: return '%0.3f' % val
+def _f4_str(val: float) -> str: return '%0.4f' % val
+def _f5_str(val: float) -> str: return '%0.5f' % val
+def _f6_str(val: float) -> str: return '%0.6f' % val
 
 
 class _datarecord:
@@ -468,7 +475,7 @@ def run(
     float_id: str,
     logger: FloatLogger,
     force_reprocess: bool = False,
-) -> dict:
+) -> SbdConverterResult:
     """
     Convert SBD files to profiles (CSV + TXT).
 

@@ -30,7 +30,7 @@ import os
 import textwrap
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TypedDict
 
 from modules.logger import FloatLogger
 
@@ -596,6 +596,11 @@ def _generate_phy_file(
     return phy_path
 
 
+class PhyResult(TypedDict):
+    phy_files: list[str]
+    errors: list[str]
+
+
 # ============================================================================
 # Public API
 # ============================================================================
@@ -608,7 +613,7 @@ def run(
     meta_file: Optional[str],
     logger: FloatLogger,
     force_reprocess: bool = False,
-) -> dict:
+) -> PhyResult:
     """
     Parse profile CSV/TXT files to .phy format.
 

@@ -1,6 +1,6 @@
 # ARGO Float Automated Processing Pipeline
 
-Automated end-to-end pipeline for processing Iridium float telemetry data. Downloads raw SBD files from Gmail, converts them to oceanographic profiles, parses to `.phy` and intermediate `.nc` format, and downloads/parses real-time ARGO netCDF files — all without manual intervention.
+Automated end-to-end pipeline for processing Iridium float telemetry data. Downloads raw SBD files from Gmail, converts them to oceanographic profiles, parses to `.phy` (NOAA database file format) and intermediate `.nc` format (for downstream QC data control), and downloads/parses real-time ARGO netCDF files — all without manual intervention.
 
 ---
 
@@ -17,6 +17,7 @@ Step 7  ARGO_RT_NETCDF_FILES/ → DMODE/.../FROM_ARGO/  (parse to intermediate .
 ```
 
 Steps 1–5 run for each float using SBD telemetry. Steps 6–7 run in parallel using the ARGO data center. All steps are non-blocking: if one step fails, the pipeline logs the error and continues to the next.
+Lack of float level parallelism is by design, no need as bottleneck only exists with 50+ floats, and our current lifecycle and deployment of floats will not reach 50+ active floats at a time. 
 
 ---
 
@@ -55,7 +56,7 @@ Two JSON state files are written automatically to track pipeline progress across
 
 **`.sbd_conversion_state.json`** — Conversion skip-cache. Stores the sorted list of `.sbd` filenames that were processed on the last conversion run. If the current SBD file list matches exactly, conversion is skipped entirely (no temp directory, no parsing). Bypassed when `force_reprocess` is set for that float.
 
-Deleting either file is safe — the next run will re-query or re-convert from scratch without data loss.
+Deleting either file is safe — the next run will re-query or re-convert from scratch without data loss. On first time run, if user has existing .sbd files, script will automatically generate JSON files and will not redownload any existing files -> just drop of .sbd files in the correct folder for the float. 
 
 ---
 
@@ -71,7 +72,8 @@ Each run section includes:
   - `DMODE_from_argo`
   - `DMODE_from_profile`
 
-Values are simple `DONE` or `ERROR`.
+Values are simple `DONE` or `ERROR` or left empty if n/a.
+EX: NOAA database missing PHY files -> no "ARGO_RT_NETCDF_FILES"
 
 ---
 
@@ -118,12 +120,6 @@ Example `force_reprocess`:
 "force_reprocess": {
   "FLOATS": ["F9184", "F9185"]
 }
-```
-
-**Optional:** Add `"dmode_tools_path"` at the top level if dmode_tools is not at the default location:
-
-```json
-"dmode_tools_path": "C:/path/to/DMODE_processing/dmode_tools"
 ```
 
 ### 2. Gmail authentication (one-time setup)

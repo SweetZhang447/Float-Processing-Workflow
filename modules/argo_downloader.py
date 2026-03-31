@@ -16,11 +16,18 @@ Key changes vs. original:
 import os
 import requests
 from concurrent.futures import ProcessPoolExecutor
-from typing import Optional
+from typing import Optional, TypedDict
 
 from bs4 import BeautifulSoup
 
 from modules.logger import FloatLogger
+
+
+
+class ArgoDownloadResult(TypedDict):
+    downloaded_files: list[str]
+    new_files: list[str]
+    errors: list[str]
 
 
 # ============================================================================
@@ -53,7 +60,7 @@ def run(
     wmo_id: str,
     logger: FloatLogger,
     force_reprocess: bool = False,
-) -> dict:
+) -> ArgoDownloadResult:
     """
     Download real-time ARGO netCDF profile files for one float.
 

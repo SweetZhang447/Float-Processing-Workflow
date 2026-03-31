@@ -25,13 +25,23 @@ import json
 import os
 import datetime as dt
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TypedDict
 
 import googleapiclient.errors
 
 from modules.gmail_auth import authenticate
 from modules.gmail_client import GmailApi
 from modules.logger import FloatLogger
+
+
+
+class SbdResult(TypedDict):
+    n_downloaded: int
+    n_overwritten: int
+    n_skipped: int
+    failed_files: list[str]
+    gaps: list[tuple[int, int]]
+    new_sbd_files: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +103,7 @@ def _build_query(imei: str, last_query_date: Optional[str], grace_hours: int) ->
 # MOMSN gap detection
 # ---------------------------------------------------------------------------
 
-def _get_momsn_gaps(sbd_dir: str, imei: str) -> list:
+def _get_momsn_gaps(sbd_dir: str, imei: str) -> list[tuple[int, int]]:
     """
     Scan sbd_dir for {imei}_*.sbd files, extract MOMSN sequence numbers,
     and return a list of (gap_start, gap_end) tuples for any missing ranges.
@@ -222,7 +232,7 @@ def run(
     float_dir: str,
     logger: FloatLogger,
     client: Optional[GmailApi] = None,
-) -> dict:
+) -> SbdResult:
     """
     Download SBD/STS files for one float from Gmail.
 
@@ -425,14 +435,14 @@ def setup_gmail_auth(gmail_cfg: dict):
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _finalize_state(state: dict, sbd_dir: str, imei: str, float_id: str, grace_hours: int):
+def _finalize_state(state: dict, sbd_dir: str, imei: str, float_id: str, grace_hours: int) -> None:
     grace_cutoff = dt.datetime.utcnow() - dt.timedelta(hours=grace_hours)
     state["last_query_date"] = grace_cutoff.strftime("%Y/%m/%d")
     state["last_run_utc"] = dt.datetime.utcnow().isoformat()
     _save_state(sbd_dir, imei, float_id, state)
 
 
-def _empty_result() -> dict:
+def _empty_result() -> SbdResult:
     return {
         "n_downloaded": 0,
         "n_overwritten": 0,
