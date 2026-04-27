@@ -1,8 +1,8 @@
 # Ignore pycache
-.modules/__pycache__/*
+modules/__pycache__/*
 .pytest_cache/*
 .claude/*
-.__pycache__/*
+__pycache__/*
 
 # Ignore config
 config.json
@@ -10,3 +10,7 @@ config.json
 # Ignore secrets
 credentials.json
 token.json
+__pycache__/test_master_status_csv.cpython-312-pytest-9.0.2.pyc
+config.json
+config.json
+config.json
