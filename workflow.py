@@ -245,11 +245,44 @@ def _build_float_status_rows(
     return rows
 
 
-def _append_float_status_csv(
+_STATUS_HEADER = [
+    "profile_number",
+    "status_profiles",
+    "phy_files",
+    "argo_RT_netcdf_file_download_status",
+    "DMODE_from_argo",
+    "DMODE_from_profile",
+]
+
+
+def _read_status_csv(path: str) -> dict[str, dict[str, str]]:
+    """
+    Read an existing master_status.csv and return profile rows keyed by
+    zero-padded 3-digit profile number (e.g. '007').
+    Skips header and any non-profile rows gracefully.
+    """
+    rows: dict[str, dict[str, str]] = {}
+    if not os.path.exists(path):
+        return rows
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if not row or not row[0].strip().isdigit():
+                continue
+            p = f"{int(row[0]):03d}"
+            rows[p] = {
+                "status_profiles":        row[1] if len(row) > 1 else "",
+                "phy_files":              row[2] if len(row) > 2 else "",
+                "argo_rt_netcdf_download": row[3] if len(row) > 3 else "",
+                "dmode_from_argo":        row[4] if len(row) > 4 else "",
+                "dmode_from_profile":     row[5] if len(row) > 5 else "",
+            }
+    return rows
+
+
+def _update_float_status_csv(
     float_dir: str,
     float_id: str,
-    run_time: datetime,
-    sbd_result: dict,
     conv_result: dict,
     phy_result: dict,
     nc_csv_result: dict,
@@ -257,67 +290,58 @@ def _append_float_status_csv(
     nc_argo_result: dict,
     force_reprocess: bool = False,
 ) -> None:
-    all_status_rows = _build_float_status_rows(conv_result, phy_result, nc_csv_result, argo_dl_result, nc_argo_result)
+    """
+    Merge this run's profile results into the float's master_status.csv.
 
-    if force_reprocess:
-        status_rows = all_status_rows
-        file_mode = "w"
-    else:
-        # Collect profile numbers that were actually newly processed this run.
-        new_profile_nums: set[str] = set()
-        for tag in conv_result.get("converted_profiles", []):
-            p = _profile_from_converter_tag(tag)
-            if p:
-                new_profile_nums.add(p)
-        for tag in conv_result.get("failed_profiles", []):
-            p = _profile_from_converter_tag(tag)
-            if p:
-                new_profile_nums.add(p)
-        for pth in argo_dl_result.get("new_files", []):
-            p = _profile_from_path(pth)
-            if p:
-                new_profile_nums.add(p)
-        for pth in argo_dl_result.get("errors", []):
-            p = _profile_from_path(pth)
-            if p:
-                new_profile_nums.add(p)
-
-        if not new_profile_nums:
-            return  # nothing new this run — don't write
-
-        status_rows = {p: all_status_rows[p] for p in new_profile_nums if p in all_status_rows}
-        file_mode = "a"
-
-    decoded_profiles = sorted(
-        p for p in (_profile_from_converter_tag(tag) for tag in conv_result.get("converted_profiles", [])) if p
+    Reads the existing file (if any), merges in new/updated rows keyed by
+    profile number, then rewrites the complete sorted table. New data for a
+    profile always overwrites the previously recorded status for that profile.
+    """
+    new_rows = _build_float_status_rows(
+        conv_result, phy_result, nc_csv_result, argo_dl_result, nc_argo_result
     )
 
+    if not new_rows and not force_reprocess:
+        return  # nothing processed this run — leave file untouched
+
     out_path = os.path.join(float_dir, f"{float_id}_master_status.csv")
-    with open(out_path, file_mode, newline="", encoding="utf-8") as f:
+    existing = _read_status_csv(out_path)
+
+    # Merge: existing rows as base, this run's rows take precedence
+    merged = {**existing, **new_rows}
+
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["RUN_UTC", run_time.strftime("%Y-%m-%dT%H:%M:%SZ")])
-        writer.writerow(["new_sbd_messages", str(len(sbd_result.get("new_sbd_files", [])))])
-        writer.writerow(["profiles_numbers_decoded", ";".join(decoded_profiles)])
-        writer.writerow([])
-        writer.writerow([
-            "profile_number",
-            "status_profiles",
-            "phy_files",
-            "argo_RT_netcdf_file_download_status",
-            "DMODE_from_argo",
-            "DMODE_from_profile",
-        ])
-        for p in sorted(status_rows.keys()):
-            row = status_rows[p]
+        writer.writerow(_STATUS_HEADER)
+        for p in sorted(merged.keys()):
+            row = merged[p]
             writer.writerow([
                 p,
-                row["status_profiles"],
-                row["phy_files"],
-                row["argo_rt_netcdf_download"],
-                row["dmode_from_argo"],
-                row["dmode_from_profile"],
+                row.get("status_profiles", ""),
+                row.get("phy_files", ""),
+                row.get("argo_rt_netcdf_download", ""),
+                row.get("dmode_from_argo", ""),
+                row.get("dmode_from_profile", ""),
             ])
-        writer.writerow([])
+
+
+# ============================================================================
+# Log cleanup
+# ============================================================================
+
+def _cleanup_old_logs(logs_dir: str, float_id: str, max_age_days: int = 90) -> None:
+    """Delete .log files in logs_dir older than max_age_days."""
+    cutoff = datetime.now(timezone.utc).timestamp() - max_age_days * 86400
+    try:
+        for entry in os.scandir(logs_dir):
+            if entry.is_file() and entry.name.endswith(".log"):
+                if entry.stat().st_mtime < cutoff:
+                    try:
+                        os.remove(entry.path)
+                    except OSError:
+                        pass
+    except OSError:
+        pass
 
 
 # ============================================================================
@@ -410,15 +434,20 @@ def run_float_pipeline(
     phy_dir = os.path.join(float_dir, "PHY_FILES")
     meta_file = float_cfg.get("meta_file") or ""
 
-    phy_result = phy_parser.run(
-        profiles_dir=profiles_dir,
-        phy_dir=phy_dir,
-        float_id=float_id,
-        aoml_id=str(float_cfg.get("aoml_id", "")),
-        meta_file=meta_file if meta_file != "REPLACE_WITH_PATH_TO_META_FILE_OR_NULL" else None,
-        logger=logger,
-        force_reprocess=force_reprocess,
-    )
+    if _no_new_sbds and not force_reprocess:
+        logger.info("PHY_PARSING", "No new SBD files — skipping PHY parsing.")
+        logger.success("PHY_PARSING")
+        phy_result = {"phy_files": [], "errors": []}
+    else:
+        phy_result = phy_parser.run(
+            profiles_dir=profiles_dir,
+            phy_dir=phy_dir,
+            float_id=float_id,
+            aoml_id=str(float_cfg.get("aoml_id", "")),
+            meta_file=meta_file if meta_file != "REPLACE_WITH_PATH_TO_META_FILE_OR_NULL" else None,
+            logger=logger,
+            force_reprocess=force_reprocess,
+        )
 
     # -------------------------------------------------------------------------
     # Step 5: NC from CSV (PROFILES → DMODE/.../FROM_PROFILE)
@@ -428,14 +457,19 @@ def run_float_pipeline(
 
     wmo_id = str(float_cfg.get("wmo_id", ""))
 
-    nc_csv_result = nc_from_csv.run(
-        profiles_dir=profiles_dir,
-        nc_dir=nc_profile_dir,
-        float_num=wmo_id,
-        broken_float=broken_float,
-        logger=logger,
-        force_reprocess=force_reprocess,
-    )
+    if _no_new_sbds and not force_reprocess:
+        logger.info("NC_FROM_CSV", "No new SBD files — skipping NC from CSV.")
+        logger.success("NC_FROM_CSV")
+        nc_csv_result = {"nc_files": [], "errors": []}
+    else:
+        nc_csv_result = nc_from_csv.run(
+            profiles_dir=profiles_dir,
+            nc_dir=nc_profile_dir,
+            float_num=wmo_id,
+            broken_float=broken_float,
+            logger=logger,
+            force_reprocess=force_reprocess,
+        )
 
     # -------------------------------------------------------------------------
     # Step 6: ARGO RT download (→ ARGO_RT_NETCDF_FILES)
@@ -482,11 +516,9 @@ def run_float_pipeline(
     logger.info("OVERALL_SUMMARY", f"NC (from CSV) generated: {len(nc_csv_result['nc_files'])}")
     logger.info("OVERALL_SUMMARY", f"ARGO RT downloaded: {len(argo_dl_result['downloaded_files'])}")
     logger.info("OVERALL_SUMMARY", f"NC (from ARGO) generated: {len(nc_argo_result['nc_files'])}")
-    _append_float_status_csv(
+    _update_float_status_csv(
         float_dir=float_dir,
         float_id=float_id,
-        run_time=run_time,
-        sbd_result=sbd_result,
         conv_result=conv_result,
         phy_result=phy_result,
         nc_csv_result=nc_csv_result,
@@ -497,6 +529,8 @@ def run_float_pipeline(
 
     log_path = logger.write()
     print(f"  [LOG] {log_path}")
+
+    _cleanup_old_logs(os.path.join(float_dir, "Logs"), float_id)
 
     return logger.has_errors()
 

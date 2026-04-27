@@ -172,6 +172,8 @@ Each run writes a timestamped log file per float:
 {output_base_dir}/{float_id}/Logs/{float_id}_YYYYMMDDTHHMMSS.log
 ```
 
+Log files older than **3 months** are automatically deleted at the end of each run. No configuration needed.
+
 The log is structured by pipeline section:
 
 ```

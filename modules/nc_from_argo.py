@@ -23,7 +23,6 @@ Original logic preserved verbatim:
 import glob
 import os
 from pathlib import Path
-
 from typing import Callable, TypedDict
 import netCDF4 as nc4
 import numpy as np

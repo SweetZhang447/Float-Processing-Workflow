@@ -16,7 +16,7 @@ Key changes vs. original:
 import os
 import requests
 from concurrent.futures import ProcessPoolExecutor
-from typing import Optional, TypedDict
+from typing import TypedDict
 
 from bs4 import BeautifulSoup
 

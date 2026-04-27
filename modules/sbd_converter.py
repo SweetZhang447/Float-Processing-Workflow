@@ -294,14 +294,14 @@ def _sbd_to_gz(sbd_src_dir: str, gz_out_dir: str, logger: FloatLogger) -> dict:
                     f"Incomplete .gz: {output_filename_path} (missing {num_msgs_to_process} message(s)). "
                     f"Profile may be mid-transmission — will be retried on next run."
                 )
-                profile_status[output_filename_path[:12]] = 'incomplete'
-                if output_file:
-                    output_file.close()
-                    output_file = None
-                    # Remove the partial .gz file
-                    partial_gz = os.path.join(gz_out_dir, output_filename_path)
-                    if os.path.exists(partial_gz):
-                        os.remove(partial_gz)
+                # profile_status[output_filename_path[:12]] = 'incomplete'
+                # if output_file:
+                #     output_file.close()
+                #     output_file = None
+                    # # Remove the partial .gz file
+                    # partial_gz = os.path.join(gz_out_dir, output_filename_path)
+                    # if os.path.exists(partial_gz):
+                    #     os.remove(partial_gz)
 
             # Parse new file header
             nullpos = sbd_data.find(b'\0', 3)
@@ -385,11 +385,11 @@ def _unzip_gz(work_dir: str, profile_status: dict, logger: FloatLogger) -> set:
                 with open(dst_bin, 'wb') as f_out:
                     shutil.copyfileobj(f_in, f_out)
             logger.info("PROFILE_CONVERSION", f"Decompressed: {file_name}")
-        except Exception as e:
+        except EOFError as e:
             logger.error(
                 "PROFILE_CONVERSION",
-                f"Failed to decompress {file_name}: {e}  "
-                f"(likely incomplete transmission — will be retried on next run if more SBD files arrive)"
+                f"Failed to decompress {file_name}: {e} "
+                f"ERROR : {e}"
             )
             failed_profiles.add(prefix)
             if os.path.exists(dst_bin):
