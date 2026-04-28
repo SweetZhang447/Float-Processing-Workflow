@@ -175,6 +175,7 @@ def _build_float_status_rows(
     nc_csv_result: dict,
     argo_dl_result: dict,
     nc_argo_result: dict,
+    profiles_state: list,
 ) -> dict[str, dict[str, str]]:
     rows: dict[str, dict[str, str]] = {}
 
@@ -187,16 +188,11 @@ def _build_float_status_rows(
             "dmode_from_profile": "",
         })
 
-    for tag in conv_result.get("converted_profiles", []):
-        p = _profile_from_converter_tag(tag)
+    for entry in profiles_state:
+        p = _norm_profile_num(entry.get("prof_num", ""))
         if p:
             ensure_row(p)
-            rows[p]["status_profiles"] = "DONE"
-    for tag in conv_result.get("failed_profiles", []):
-        p = _profile_from_converter_tag(tag)
-        if p:
-            ensure_row(p)
-            rows[p]["status_profiles"] = "ERROR"
+            rows[p]["status_profiles"] = "COMPLETE" if entry.get("status") == "complete" else "INCOMPLETE"
 
     for phy_path in phy_result.get("phy_files", []):
         p = _profile_from_path(phy_path)
@@ -288,6 +284,7 @@ def _update_float_status_csv(
     nc_csv_result: dict,
     argo_dl_result: dict,
     nc_argo_result: dict,
+    profiles_state: list,
     force_reprocess: bool = False,
 ) -> None:
     """
@@ -298,7 +295,7 @@ def _update_float_status_csv(
     profile always overwrites the previously recorded status for that profile.
     """
     new_rows = _build_float_status_rows(
-        conv_result, phy_result, nc_csv_result, argo_dl_result, nc_argo_result
+        conv_result, phy_result, nc_csv_result, argo_dl_result, nc_argo_result, profiles_state
     )
 
     if not new_rows and not force_reprocess:
@@ -516,6 +513,16 @@ def run_float_pipeline(
     logger.info("OVERALL_SUMMARY", f"NC (from CSV) generated: {len(nc_csv_result['nc_files'])}")
     logger.info("OVERALL_SUMMARY", f"ARGO RT downloaded: {len(argo_dl_result['downloaded_files'])}")
     logger.info("OVERALL_SUMMARY", f"NC (from ARGO) generated: {len(nc_argo_result['nc_files'])}")
+    # Read current profile state for status_profiles column
+    _state_file = os.path.join(profiles_dir, ".sbd_conversion_state.json")
+    profiles_state: list = []
+    if os.path.exists(_state_file):
+        try:
+            with open(_state_file) as _sf:
+                profiles_state = json.load(_sf).get("profiles", [])
+        except (OSError, json.JSONDecodeError):
+            pass
+
     _update_float_status_csv(
         float_dir=float_dir,
         float_id=float_id,
@@ -524,6 +531,7 @@ def run_float_pipeline(
         nc_csv_result=nc_csv_result,
         argo_dl_result=argo_dl_result,
         nc_argo_result=nc_argo_result,
+        profiles_state=profiles_state,
         force_reprocess=force_reprocess,
     )
 

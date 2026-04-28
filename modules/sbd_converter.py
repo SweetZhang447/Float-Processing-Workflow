@@ -33,8 +33,8 @@ import os
 import shutil
 import struct
 import time
-from pathlib import Path
 from typing import Optional, TypedDict
+import zlib
 
 from modules.logger import FloatLogger
 
@@ -252,7 +252,17 @@ SBD_CONT_FILE_START_CHAR = b'\x02'.decode('utf-8')
 # Internal pipeline steps
 # ============================================================================
 
-def _sbd_to_gz(sbd_src_dir: str, gz_out_dir: str, logger: FloatLogger) -> dict:
+def _momsn_from_sbd_path(path: str) -> Optional[int]:
+    """Extract the MOMSN sequence number from an SBD filename, or None if not parseable."""
+    basename = os.path.basename(path)
+    fnseq = basename[basename.rfind('_') + 1: basename.rfind('.')]
+    try:
+        return int(fnseq)
+    except ValueError:
+        return None
+
+
+def _sbd_to_gz(sbd_src_dir: str, gz_out_dir: str, logger: FloatLogger) -> tuple[dict, list]:
     """
     Convert .sbd files from sbd_src_dir into .gz files in gz_out_dir.
 
@@ -261,7 +271,8 @@ def _sbd_to_gz(sbd_src_dir: str, gz_out_dir: str, logger: FloatLogger) -> dict:
              removed .meta file check, removed incomplete_gz_files CSV tracking.
 
     Returns:
-        dict mapping output_filename_path[:12] prefix → 'complete' | 'incomplete'
+        profile_status:  dict mapping output_filename_path[:12] prefix → 'complete' | 'incomplete'
+        profile_records: list of per-gz-file dicts with prof_num, MOMSN range, and message counts
     """
     num_msgs_to_process = 0
     output_filename_path = None
@@ -269,6 +280,14 @@ def _sbd_to_gz(sbd_src_dir: str, gz_out_dir: str, logger: FloatLogger) -> dict:
     prevmsg = b''
     output_file = None
     profile_status = {}
+
+    # Per-gz-file state tracking
+    profile_records: list = []
+    _prof_num: Optional[str] = None
+    _prof_start_momsn: Optional[int] = None
+    _prof_last_momsn: Optional[int] = None
+    _prof_total_msgs: int = 0
+    _prof_msgs_received: int = 0
 
     sbd_files = sorted(glob.glob(os.path.join(sbd_src_dir, '*.sbd')))
     logger.info("PROFILE_CONVERSION", f"SBD files to process: {len(sbd_files)}")
@@ -279,29 +298,26 @@ def _sbd_to_gz(sbd_src_dir: str, gz_out_dir: str, logger: FloatLogger) -> dict:
         if isinstance(first_char, int):
             first_char = builtins.chr(first_char)
 
-        fnseq_str = current_sbd_path[current_sbd_path.rfind('_') + 1: current_sbd_path.rfind('.')]
-        try:
-            int(fnseq_str)
-        except ValueError:
+        momsn = _momsn_from_sbd_path(current_sbd_path)
+        if momsn is None:
             logger.warning("PROFILE_CONVERSION", f"Invalid SBD filename: {os.path.basename(current_sbd_path)}")
             continue
 
         if first_char == SBD_NEW_FILE_START_CHAR:
-            # Incomplete previous file
+            # Record previous incomplete gz file before starting a new one
             if output_filename_path and num_msgs_to_process != 0:
                 logger.warning(
                     "PROFILE_CONVERSION",
-                    f"Incomplete .gz: {output_filename_path} (missing {num_msgs_to_process} message(s)). "
-                    f"Profile may be mid-transmission — will be retried on next run."
+                    f"Incomplete .gz: {output_filename_path} (missing {num_msgs_to_process} message(s))."
                 )
-                # profile_status[output_filename_path[:12]] = 'incomplete'
-                # if output_file:
-                #     output_file.close()
-                #     output_file = None
-                    # # Remove the partial .gz file
-                    # partial_gz = os.path.join(gz_out_dir, output_filename_path)
-                    # if os.path.exists(partial_gz):
-                    #     os.remove(partial_gz)
+                if _prof_num is not None:
+                    profile_records.append({
+                        "prof_num": _prof_num,
+                        "momsn_range": [_prof_start_momsn, _prof_last_momsn],
+                        "num_messages": _prof_total_msgs,
+                        "num_messages_received": _prof_msgs_received,
+                        "status": "incomplete",
+                    })
 
             # Parse new file header
             nullpos = sbd_data.find(b'\0', 3)
@@ -311,6 +327,13 @@ def _sbd_to_gz(sbd_src_dir: str, gz_out_dir: str, logger: FloatLogger) -> dict:
             if num_msgs_to_process <= 0:
                 logger.warning("PROFILE_CONVERSION", f"Bad message count in SBD header: {os.path.basename(current_sbd_path)}")
                 continue
+
+            # Initialize tracking for this gz file
+            _prof_num = output_filename_path[9:12] if len(output_filename_path) >= 12 else output_filename_path
+            _prof_start_momsn = momsn
+            _prof_last_momsn = momsn
+            _prof_total_msgs = num_msgs_to_process  # total declared in header, before any decrement
+            _prof_msgs_received = 1
 
             output_file = open(os.path.join(gz_out_dir, output_filename_path), 'wb')
             output_file.write(sbd_data[nullpos + 1:])
@@ -333,6 +356,8 @@ def _sbd_to_gz(sbd_src_dir: str, gz_out_dir: str, logger: FloatLogger) -> dict:
                     output_file.write(sbd_data[1:])
                     msgfns.append(current_sbd_path)
                     num_msgs_to_process -= 1
+                    _prof_last_momsn = momsn
+                    _prof_msgs_received += 1
 
         # Check if .gz file is complete
         if num_msgs_to_process <= 0 and output_file is not None:
@@ -340,6 +365,15 @@ def _sbd_to_gz(sbd_src_dir: str, gz_out_dir: str, logger: FloatLogger) -> dict:
             output_file = None
             profile_status[output_filename_path[:12]] = 'complete'
             logger.info("PROFILE_CONVERSION", f"Created .gz: {output_filename_path}")
+            if _prof_num is not None:
+                profile_records.append({
+                    "prof_num": _prof_num,
+                    "momsn_range": [_prof_start_momsn, _prof_last_momsn],
+                    "num_messages": _prof_total_msgs,
+                    "num_messages_received": _prof_msgs_received,
+                    "status": "complete",
+                })
+                _prof_num = None
             msgfns = []
 
     # Handle last incomplete file
@@ -349,13 +383,18 @@ def _sbd_to_gz(sbd_src_dir: str, gz_out_dir: str, logger: FloatLogger) -> dict:
             f"Last .gz incomplete: {output_filename_path} (missing {num_msgs_to_process} message(s))."
         )
         profile_status[output_filename_path[:12]] = 'incomplete'
+        if _prof_num is not None:
+            profile_records.append({
+                "prof_num": _prof_num,
+                "momsn_range": [_prof_start_momsn, _prof_last_momsn],
+                "num_messages": _prof_total_msgs,
+                "num_messages_received": _prof_msgs_received,
+                "status": "incomplete",
+            })
         if output_file:
             output_file.close()
-            partial_gz = os.path.join(gz_out_dir, output_filename_path)
-            if os.path.exists(partial_gz):
-                os.remove(partial_gz)
 
-    return profile_status
+    return profile_status, profile_records
 
 
 def _unzip_gz(work_dir: str, profile_status: dict, logger: FloatLogger) -> set:
@@ -373,10 +412,6 @@ def _unzip_gz(work_dir: str, profile_status: dict, logger: FloatLogger) -> set:
             continue
 
         prefix = file_name[:12]
-        if profile_status.get(prefix) == 'incomplete':
-            # Already removed in _sbd_to_gz; skip
-            continue
-
         src_gz = os.path.join(work_dir, file_name)
         dst_bin = os.path.join(work_dir, file_name[:-3])  # strip .gz
 
@@ -384,8 +419,16 @@ def _unzip_gz(work_dir: str, profile_status: dict, logger: FloatLogger) -> set:
             with gzip.open(src_gz, 'rb') as f_in:
                 with open(dst_bin, 'wb') as f_out:
                     shutil.copyfileobj(f_in, f_out)
-            logger.info("PROFILE_CONVERSION", f"Decompressed: {file_name}")
         except EOFError as e:
+            logger.error(
+                "PROFILE_CONVERSION",
+                f"Failed to decompress {file_name}: {e} "
+                f"ERROR : {e}"
+            )
+            failed_profiles.add(prefix)
+            if os.path.exists(dst_bin):
+                os.remove(dst_bin)
+        except zlib.error as e:
             logger.error(
                 "PROFILE_CONVERSION",
                 f"Failed to decompress {file_name}: {e} "
@@ -465,6 +508,77 @@ def _bin_to_csv(work_dir: str, logger: FloatLogger) -> list:
     return output_files
 
 
+def _aggregate_profile_records(records: list) -> list:
+    """
+    Collapse per-gz-file records into one entry per prof_num.
+    - momsn_range: [min start, max end] across all gz files for that profile
+    - num_messages / num_messages_received: summed
+    - status: 'incomplete' if any gz file was incomplete, else 'complete'
+    """
+    groups: dict[str, dict] = {}
+    for r in records:
+        key = r["prof_num"]
+        if key not in groups:
+            groups[key] = {
+                "prof_num": key,
+                "momsn_range": list(r["momsn_range"]),
+                "num_messages": r["num_messages"],
+                "num_messages_received": r["num_messages_received"],
+                "status": r["status"],
+            }
+        else:
+            g = groups[key]
+            g["momsn_range"][0] = min(g["momsn_range"][0], r["momsn_range"][0])
+            g["momsn_range"][1] = max(g["momsn_range"][1], r["momsn_range"][1])
+            g["num_messages"] += r["num_messages"]
+            g["num_messages_received"] += r["num_messages_received"]
+            if r["status"] == "incomplete":
+                g["status"] = "incomplete"
+    return list(groups.values())
+
+
+def _compute_start_momsn(profiles: list, all_sbd_files: list, new_sbd_basenames: set) -> Optional[int]:
+    """
+    Determine the earliest MOMSN that needs reprocessing.
+
+    Returns the minimum MOMSN to process from, or None if all files should be processed.
+
+    Logic:
+      1. Find the min MOMSN among the new (previously unseen) SBD files.
+      2. Find the largest prof_num that is complete.
+      3. If there are incomplete profiles after that last-complete prof_num,
+         pull their start MOMSNs in too — those SBDs must be reprocessed alongside the new ones.
+    """
+    new_momsns = [
+        m for f in all_sbd_files
+        if os.path.basename(f) in new_sbd_basenames
+        and (m := _momsn_from_sbd_path(f)) is not None
+    ]
+    if not new_momsns:
+        return None
+    min_new_momsn = min(new_momsns)
+
+    if not profiles:
+        return min_new_momsn
+
+    complete_nums = [p["prof_num"] for p in profiles if p["status"] == "complete"]
+    last_complete = max(complete_nums) if complete_nums else None
+
+    if last_complete is not None:
+        incomplete_after = [
+            p for p in profiles
+            if p["status"] == "incomplete" and p["prof_num"] > last_complete
+        ]
+    else:
+        incomplete_after = [p for p in profiles if p["status"] == "incomplete"]
+
+    if incomplete_after:
+        min_incomplete_momsn = min(p["momsn_range"][0] for p in incomplete_after)
+        return min(min_incomplete_momsn, min_new_momsn)
+
+    return min_new_momsn
+
+
 # ============================================================================
 # Public API
 # ============================================================================
@@ -506,30 +620,50 @@ def run(
         logger.success("PROFILE_CONVERSION")
         return {"converted_profiles": [], "failed_profiles": [], "new_profile_files": []}
 
-    # Early-exit: if SBD file set is unchanged since last conversion and not forcing, skip all temp work.
     _sbd_state_file = os.path.join(profiles_dir, ".sbd_conversion_state.json")
     current_sbd_names = [os.path.basename(f) for f in sbd_files]  # already sorted
+
+    # Load last state if available
+    _last_state: dict = {}
     if not force_reprocess and os.path.exists(_sbd_state_file):
         with open(_sbd_state_file) as _f:
             _last_state = json.load(_f)
-        if _last_state.get("processed_sbd_files") == current_sbd_names:
-            logger.info("PROFILE_CONVERSION", "No new SBD files since last conversion — skipping.")
-            logger.success("PROFILE_CONVERSION")
-            return {"converted_profiles": [], "failed_profiles": [], "new_profile_files": []}
+
+    last_processed_set = set(_last_state.get("processed_sbd_files", []))
+    new_sbd_basenames = set(current_sbd_names) - last_processed_set
+
+    if not force_reprocess and not new_sbd_basenames:
+        logger.info("PROFILE_CONVERSION", "No new SBD files since last conversion — skipping.")
+        logger.success("PROFILE_CONVERSION")
+        return {"converted_profiles": [], "failed_profiles": [], "new_profile_files": []}
+
+    # Compute starting MOMSN for incremental processing
+    profiles_state = _last_state.get("profiles", [])
+    if force_reprocess or not profiles_state:
+        start_momsn = None  # full reprocess
+    else:
+        start_momsn = _compute_start_momsn(profiles_state, sbd_files, new_sbd_basenames)
+
+    # Filter to only the SBD files that need processing
+    if start_momsn is not None:
+        sbd_files_to_copy = [f for f in sbd_files if (_momsn_from_sbd_path(f) or -1) >= start_momsn]
+        logger.info("PROFILE_CONVERSION", f"Incremental run: {len(sbd_files_to_copy)} SBD files from MOMSN {start_momsn}.")
+    else:
+        sbd_files_to_copy = sbd_files
+        logger.info("PROFILE_CONVERSION", f"Full run: processing all {len(sbd_files_to_copy)} SBD files.")
 
     # Past all early exits — now create tmp_dir and run conversion
     tmp_dir = os.path.join(os.path.dirname(profiles_dir), "tmp_dir")
     os.makedirs(tmp_dir, exist_ok=True)
-    logger.info("PROFILE_CONVERSION", f"Working temp dir: {tmp_dir}")
 
     try:
-        # Step 1: Copy .sbd files to temp dir (originals untouched)
-        for f in sbd_files:
+        # Step 1: Copy relevant .sbd files to temp dir (originals untouched)
+        for f in sbd_files_to_copy:
             shutil.copy2(f, tmp_dir)
-        logger.info("PROFILE_CONVERSION", f"Copied {len(sbd_files)} .sbd files to temp dir.")
+        logger.info("PROFILE_CONVERSION", f"Copied {len(sbd_files_to_copy)} .sbd files to temp dir.")
 
         # Step 2: SBD → .gz
-        profile_status = _sbd_to_gz(tmp_dir, tmp_dir, logger)
+        profile_status, profile_records = _sbd_to_gz(tmp_dir, tmp_dir, logger)
 
         # Step 3: .gz → .bin (delete .gz)
         failed_gz = _unzip_gz(tmp_dir, profile_status, logger)
@@ -551,9 +685,16 @@ def run(
 
         logger.info("PROFILE_CONVERSION", f"Moved {len(new_profile_files)} profile files to PROFILES/.")
 
-        # Save SBD state so subsequent runs can skip if no new files arrive
+        # Merge old complete profiles (not reprocessed this run) with new records,
+        # then save state so subsequent runs can detect new SBD files and skip unchanged profiles.
+        old_profiles = _last_state.get("profiles", [])
+        reprocessed_prof_nums = {r["prof_num"] for r in profile_records}
+        preserved = [p for p in old_profiles if p["prof_num"] not in reprocessed_prof_nums]
         with open(_sbd_state_file, 'w') as _f:
-            json.dump({"processed_sbd_files": current_sbd_names}, _f)
+            json.dump({
+                "processed_sbd_files": current_sbd_names,
+                "profiles": _aggregate_profile_records(preserved + profile_records),
+            }, _f, indent=2)
 
         # Determine converted vs failed profile prefixes
         converted = [p for p, s in profile_status.items() if s == 'complete' and p not in failed_gz]
