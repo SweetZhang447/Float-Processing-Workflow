@@ -103,21 +103,27 @@ def _build_query(imei: str, last_query_date: Optional[str], grace_hours: int) ->
 # MOMSN gap detection
 # ---------------------------------------------------------------------------
 
-def _get_momsn_gaps(sbd_dir: str, imei: str) -> list[tuple[int, int]]:
+def _get_momsn_gaps(
+    sbd_dir: str,
+    imei: str,
+    momsns: Optional[list[int]] = None,
+) -> list[tuple[int, int]]:
     """
-    Scan sbd_dir for {imei}_*.sbd files, extract MOMSN sequence numbers,
-    and return a list of (gap_start, gap_end) tuples for any missing ranges.
+    Return (gap_start, gap_end) tuples for missing MOMSN ranges.
 
-    Example: files 000441, 000442, 000444 → returns [(443, 443)]
+    If momsns is provided, use those values directly (scoped check).
+    Otherwise scan sbd_dir for all {imei}_*.sbd files (full check).
+
+    Example: [441, 442, 444] → [(443, 443)]
     """
-    sbd_files = list(Path(sbd_dir).glob(f"{imei}_*.sbd"))
-    momsns = []
-    for f in sbd_files:
-        try:
-            momsn = int(f.stem.split("_")[1])
-            momsns.append(momsn)
-        except (IndexError, ValueError):
-            continue
+    if momsns is None:
+        sbd_files = list(Path(sbd_dir).glob(f"{imei}_*.sbd"))
+        momsns = []
+        for f in sbd_files:
+            try:
+                momsns.append(int(f.stem.split("_")[1]))
+            except (IndexError, ValueError):
+                continue
 
     if len(momsns) < 2:
         return []
@@ -232,6 +238,7 @@ def run(
     float_dir: str,
     logger: FloatLogger,
     client: Optional[GmailApi] = None,
+    force_reprocess: bool = False,
 ) -> SbdResult:
     """
     Download SBD/STS files for one float from Gmail.
@@ -368,7 +375,16 @@ def run(
             state["downloaded_message_ids"].add(email_message["id"])
 
     # --- MOMSN gap report ---
-    gaps = _get_momsn_gaps(sbd_dir, imei)
+    if force_reprocess:
+        gaps = _get_momsn_gaps(sbd_dir, imei)
+    else:
+        new_momsns = []
+        for fname in new_sbd_files:
+            try:
+                new_momsns.append(int(Path(fname).stem.split("_")[1]))
+            except (IndexError, ValueError):
+                continue
+        gaps = _get_momsn_gaps(sbd_dir, imei, momsns=new_momsns)
     if gaps:
         logger.warning("SBD_DOWNLOAD", f"{len(gaps)} MOMSN gap(s) detected (no automated recovery — manual follow-up may be needed):")
         for g_start, g_end in gaps:
@@ -436,9 +452,10 @@ def setup_gmail_auth(gmail_cfg: dict):
 # ---------------------------------------------------------------------------
 
 def _finalize_state(state: dict, sbd_dir: str, imei: str, float_id: str, grace_hours: int) -> None:
-    grace_cutoff = dt.datetime.utcnow() - dt.timedelta(hours=grace_hours)
+
+    grace_cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=grace_hours)
     state["last_query_date"] = grace_cutoff.strftime("%Y/%m/%d")
-    state["last_run_utc"] = dt.datetime.utcnow().isoformat()
+    state["last_run_utc"] = dt.datetime.now(dt.timezone.utc).isoformat()
     _save_state(sbd_dir, imei, float_id, state)
 
 

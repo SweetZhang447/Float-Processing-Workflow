@@ -389,6 +389,7 @@ def run_float_pipeline(
         float_dir=float_dir,
         logger=logger,
         client=gmail_client,
+        force_reprocess=force_reprocess,
     )
 
     # -------------------------------------------------------------------------

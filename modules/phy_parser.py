@@ -659,8 +659,6 @@ def run(
         logger.success("PHY_PARSING")
         return {"phy_files": [], "errors": []}
 
-    logger.info("PHY_PARSING", f"Profiles to parse: {len(unique_tags)}")
-
     # phy filename prefix: {aoml_id}_{float_id padded to 6 digits}
     float_num = ''.join(filter(str.isdigit, float_id))
     phy_prefix = f"{aoml_id}_{float_num.zfill(6)}"

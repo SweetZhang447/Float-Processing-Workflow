@@ -89,8 +89,6 @@ def run(
         logger.success("NC_FROM_CSV")
         return {"nc_files": [], "errors": []}
 
-    logger.info("NC_FROM_CSV", f"Profiles to convert: {len(files_dict)}")
-
     nc_files = []
     errors = []
 

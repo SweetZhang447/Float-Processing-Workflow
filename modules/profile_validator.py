@@ -2,14 +2,14 @@ import csv
 import glob
 import os
 
-MIN_LGR_CP_PTSCI = 200
+MIN_LGR_CP_PTSCI = 100
 SCIENCE_TYPE = "LGR_CP_PTSCI"
 
 
 def validate_incomplete_profiles(profiles: list, profiles_dir: str) -> list:
     """
-    For each profile marked 'incomplete', check whether the produced CSV files
-    meet the scientific data threshold. If they do, upgrade status to 'complete'.
+    For each profile, check whether the produced CSV files meet the scientific data threshold,
+    and is comprised of 3 files. If they do, upgrade status to 'complete' or 'incomplete'.
 
     Criteria for upgrade:
       - All 3 expected files present: science_log.csv, vitals_log.csv, system_log.txt
@@ -20,19 +20,16 @@ def validate_incomplete_profiles(profiles: list, profiles_dir: str) -> list:
         profiles_dir: Path to PROFILES/ directory containing the CSV/TXT files.
 
     Returns:
-        Updated profiles list (same structure; qualifying 'incomplete' entries → 'complete').
+        Updated profiles list (same structure).
     """
     updated = []
     for profile in profiles:
-        if profile.get("status") != "incomplete":
-            updated.append(profile)
-            continue
 
         prof_num = profile.get("prof_num", "")
         if _check_profile(prof_num, profiles_dir):
             updated.append({**profile, "status": "complete"})
         else:
-            updated.append(profile)
+            updated.append({**profile, "status": "incomplete"})
     return updated
 
 
