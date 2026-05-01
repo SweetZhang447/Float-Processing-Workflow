@@ -93,7 +93,6 @@ def run(
         try:
             nc_path = _process_argo_nc(file, nc_dir, wmo_id, make_nc_file_origin)
             nc_output_files.append(nc_path)
-            logger.info("NC_FROM_ARGO", f"{fname}: success → {os.path.basename(nc_path)}")
         except Exception as e:
             errors.append(fname)
             logger.error("NC_FROM_ARGO", f"{fname}: {type(e).__name__}: {e}")

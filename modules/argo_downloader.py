@@ -116,7 +116,6 @@ def run(
     for full_url, filename in download_links:
         local_path = os.path.join(argo_nc_dir, filename)
         if os.path.exists(local_path) and not force_reprocess:
-            logger.file_only("ARGO_DOWNLOAD", f"Skipping existing: {filename}")
             downloaded_files.append(local_path)
         else:
             links_to_download.append((full_url, filename))

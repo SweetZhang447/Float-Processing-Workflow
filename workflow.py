@@ -53,6 +53,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from modules.logger import setup_console_logging
+from modules.sbd_downloader import build_client
+from modules.logger import FloatLogger
+from modules import sbd_downloader, sbd_converter, phy_parser
+from modules import nc_from_csv, argo_downloader, nc_from_argo
 
 # ============================================================================
 # Lazy imports (deferred so --setup-gmail-auth doesn't need APScheduler etc.)
@@ -69,18 +74,10 @@ def _import_scheduler():
 
 
 # ============================================================================
-# Config loading
+# Config JSON file loading
 # ============================================================================
 
 DEFAULT_CONFIG = os.path.join(os.path.dirname(__file__), "config.json")
-
-
-def load_config(config_path: str) -> dict:
-    with open(config_path, "r") as f:
-        raw = json.load(f)
-    # Strip _comment keys
-    return {k: v for k, v in raw.items() if not k.startswith("_")}
-
 
 def _strip_comments(obj: Any) -> Any:
     """Recursively remove keys starting with '_comment' from config dicts."""
@@ -110,12 +107,6 @@ def _parse_force_reprocess_config(force_reprocess_cfg: object) -> set[str]:
     """
     if force_reprocess_cfg is None:
         return set()
-
-    if isinstance(force_reprocess_cfg, bool):
-        raise ValueError(
-            "Boolean 'force_reprocess' is no longer supported. "
-            "Use an object: {\"FLOATS\": [..]}."
-        )
 
     if not isinstance(force_reprocess_cfg, dict):
         raise ValueError("force_reprocess must be an object with a 'FLOATS' list.")
@@ -287,25 +278,24 @@ def _update_float_status_csv(
     profiles_state: list,
     force_reprocess: bool = False,
 ) -> None:
-    """
-    Merge this run's profile results into the float's master_status.csv.
-
-    Reads the existing file (if any), merges in new/updated rows keyed by
-    profile number, then rewrites the complete sorted table. New data for a
-    profile always overwrites the previously recorded status for that profile.
-    """
     new_rows = _build_float_status_rows(
         conv_result, phy_result, nc_csv_result, argo_dl_result, nc_argo_result, profiles_state
     )
-
-    if not new_rows and not force_reprocess:
-        return  # nothing processed this run — leave file untouched
-
     out_path = os.path.join(float_dir, f"{float_id}_master_status.csv")
-    existing = _read_status_csv(out_path)
+    file_exists = os.path.exists(out_path)
 
-    # Merge: existing rows as base, this run's rows take precedence
-    merged = {**existing, **new_rows}
+    if not file_exists or force_reprocess:
+        merged = dict(new_rows)
+    else:
+        existing = _read_status_csv(out_path)
+        merged = {p: dict(data) for p, data in existing.items()}
+        for p, new_data in new_rows.items():
+            if p not in merged:
+                merged[p] = new_data
+            else:
+                for field, new_val in new_data.items():
+                    if new_val and new_val != merged[p].get(field, ""):
+                        merged[p][field] = new_val
 
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -383,10 +373,6 @@ def run_float_pipeline(
         gmail_client:        Optional pre-built GmailApi (shared auth across floats).
         force_reprocess:     If True, regenerate all intermediate files even if they exist.
     """
-    from modules.logger import FloatLogger
-    from modules import sbd_downloader, sbd_converter, phy_parser
-    from modules import nc_from_csv, argo_downloader, nc_from_argo
-
     float_id = float_cfg["float_id"]
     float_dir = os.path.join(output_base_dir, float_id)
     _ensure_float_dirs(float_dir, float_id)
@@ -487,18 +473,28 @@ def run_float_pipeline(
         logger.success("ARGO_DOWNLOAD")
         argo_dl_result = {"downloaded_files": [], "errors": []}
 
+    # Check if any files were downloaded 
+    _no_new_argo_files = not argo_dl_result["downloaded_files"] 
+
     # -------------------------------------------------------------------------
     # Step 7: NC from ARGO (ARGO_RT_NETCDF_FILES → DMODE/.../FROM_ARGO)
     # -------------------------------------------------------------------------
     nc_argo_dir = os.path.join(float_dir, "DMODE", f"{float_id}_0", f"{float_id}_0_FROM_ARGO")
 
-    nc_argo_result = nc_from_argo.run(
-        argo_nc_dir=argo_nc_dir,
-        nc_dir=nc_argo_dir,
-        wmo_id=wmo_id,
-        logger=logger,
-        force_reprocess=force_reprocess,
-    )
+    # Skip generation if no new ARGO files were downloaded and not force reprocess
+    if _no_new_argo_files and not force_reprocess:
+        logger.info("NC_FROM_ARGO", "No new ARGO RT files — skipping NC from ARGO.")
+        logger.success("NC_FROM_ARGO")
+        nc_argo_result = {"nc_files": [], "errors": []}
+    else:
+        nc_argo_result = nc_from_argo.run(
+            argo_nc_dir=argo_nc_dir,
+            nc_dir=nc_argo_dir,
+            wmo_id=wmo_id,
+            logger=logger,
+            force_reprocess=force_reprocess,
+        )
+
 
     # -------------------------------------------------------------------------
     # OVERALL_SUMMARY section
@@ -522,18 +518,20 @@ def run_float_pipeline(
                 profiles_state = json.load(_sf).get("profiles", [])
         except (OSError, json.JSONDecodeError):
             pass
-
-    _update_float_status_csv(
-        float_dir=float_dir,
-        float_id=float_id,
-        conv_result=conv_result,
-        phy_result=phy_result,
-        nc_csv_result=nc_csv_result,
-        argo_dl_result=argo_dl_result,
-        nc_argo_result=nc_argo_result,
-        profiles_state=profiles_state,
-        force_reprocess=force_reprocess,
-    )
+    
+    # Skip editing CSV if there were no new SBDs and no new ARGO files and not force reprocess
+    if not _no_new_sbds or not _no_new_argo_files or force_reprocess:
+        _update_float_status_csv(
+            float_dir=float_dir,
+            float_id=float_id,
+            conv_result=conv_result,
+            phy_result=phy_result,
+            nc_csv_result=nc_csv_result,
+            argo_dl_result=argo_dl_result,
+            nc_argo_result=nc_argo_result,
+            profiles_state=profiles_state,
+            force_reprocess=force_reprocess,
+        )
 
     log_path = logger.write()
     print(f"  [LOG] {log_path}")
@@ -549,7 +547,6 @@ def run_float_pipeline(
 
 def run_all(config_path: str) -> None:
     """Run the full pipeline for all active floats in config."""
-    from modules.logger import setup_console_logging
     setup_console_logging()
 
     config = load_config(config_path)
@@ -568,7 +565,6 @@ def run_all(config_path: str) -> None:
     # Authenticate once and share client across all floats
     gmail_client = None
     try:
-        from modules.sbd_downloader import build_client
         gmail_client = build_client(gmail_cfg)
         print("[AUTH] Gmail authentication successful.")
     except Exception as e:
@@ -581,10 +577,6 @@ def run_all(config_path: str) -> None:
     any_errors = False
     for float_cfg in floats:
         float_id = float_cfg.get("float_id", "UNKNOWN")
-        # Skip placeholder entries
-        if float_cfg.get("imei", "REPLACE_WITH_IMEI") == "REPLACE_WITH_IMEI":
-            print(f"  [{float_id}] IMEI not configured — skipping.")
-            continue
 
         print(f"\n{'='*60}\n  Float: {float_id}\n{'='*60}")
         force_reprocess = float_id in force_reprocess_by_float
@@ -617,7 +609,7 @@ def main() -> None:
         epilog="""
 Examples:
   Run once:              python workflow.py
-  Custom config:         python workflow.py --config my_config.json
+  Custom config:         python workflow.py --config PATH/TO/my_config.json, defaults to CONFIG in code dir
   Scheduled:             python workflow.py --schedule
   Gmail auth setup:      python workflow.py --setup-gmail-auth
         """,

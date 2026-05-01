@@ -37,6 +37,7 @@ from typing import Optional, TypedDict
 import zlib
 
 from modules.logger import FloatLogger
+from modules.profile_validator import validate_incomplete_profiles
 
 
 
@@ -364,7 +365,6 @@ def _sbd_to_gz(sbd_src_dir: str, gz_out_dir: str, logger: FloatLogger) -> tuple[
             output_file.close()
             output_file = None
             profile_status[output_filename_path[:12]] = 'complete'
-            logger.info("PROFILE_CONVERSION", f"Created .gz: {output_filename_path}")
             if _prof_num is not None:
                 profile_records.append({
                     "prof_num": _prof_num,
@@ -437,7 +437,15 @@ def _unzip_gz(work_dir: str, profile_status: dict, logger: FloatLogger) -> set:
             failed_profiles.add(prefix)
             if os.path.exists(dst_bin):
                 os.remove(dst_bin)
-
+        except gzip.BadGzipFile as e :
+            logger.error(
+                "PROFILE_CONVERSION",
+                f"Failed to decompress {file_name}: {e} "
+                f"ERROR : {e}"
+            )
+            failed_profiles.add(prefix)
+            if os.path.exists(dst_bin):
+                os.remove(dst_bin)
         # Always delete .gz after attempt
         try:
             os.remove(src_gz)
@@ -494,7 +502,6 @@ def _bin_to_csv(work_dir: str, logger: FloatLogger) -> list:
                         pass  # Bad record — skip, continue
 
             output_files.append(os.path.basename(csv_path))
-            logger.info("PROFILE_CONVERSION", f"Decoded: {os.path.basename(csv_path)}")
 
         except Exception as e:
             logger.error("PROFILE_CONVERSION", f"Failed to decode {os.path.basename(bin_path)}: {e}")
@@ -690,15 +697,17 @@ def run(
         old_profiles = _last_state.get("profiles", [])
         reprocessed_prof_nums = {r["prof_num"] for r in profile_records}
         preserved = [p for p in old_profiles if p["prof_num"] not in reprocessed_prof_nums]
+        aggregated = _aggregate_profile_records(preserved + profile_records)
+        validated  = validate_incomplete_profiles(aggregated, profiles_dir)
         with open(_sbd_state_file, 'w') as _f:
             json.dump({
                 "processed_sbd_files": current_sbd_names,
-                "profiles": _aggregate_profile_records(preserved + profile_records),
+                "profiles": validated,
             }, _f, indent=2)
 
         # Determine converted vs failed profile prefixes
         converted = [p for p, s in profile_status.items() if s == 'complete' and p not in failed_gz]
-        failed = [p for p, s in profile_status.items() if s == 'incomplete'] + list(failed_gz)
+        failed = [p for p, s in profile_status.items() if s == 'incomplete']
 
         if not failed:
             logger.success("PROFILE_CONVERSION")

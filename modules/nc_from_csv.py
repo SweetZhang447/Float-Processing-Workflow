@@ -102,7 +102,6 @@ def run(
 
         nc_path = os.path.join(nc_dir, f"{float_num}-{int(profile_num):03}.nc")
         if os.path.exists(nc_path) and not force_reprocess:
-            logger.file_only("NC_FROM_CSV", f"Profile {profile_num}: already exists — skipping.")
             nc_files.append(nc_path)
             continue
 
@@ -112,7 +111,6 @@ def run(
                 to_julian_day, make_nc_file_origin, logger
             )
             nc_files.append(nc_path)
-            logger.info("NC_FROM_CSV", f"Profile {profile_num}: success → {os.path.basename(nc_path)}")
         except Exception as e:
             errors.append(profile_num)
             logger.error("NC_FROM_CSV", f"Profile {profile_num}: {e}")
@@ -213,7 +211,6 @@ def _process_profile(
             longitude = round(float(GPS[3]), 4)
             juld_location = to_julian_day(datetime.strptime(GPS[1], "%Y%m%dT%H%M%S"))
         else:
-            logger.warning("NC_FROM_CSV", f"Profile {profile_num}: GPS not present.")
             latitude = np.nan
             longitude = np.nan
             juld_location = np.nan
@@ -229,7 +226,6 @@ def _process_profile(
     else:
         if len(PTSCI_timestamps) > 0:
             juld_timestamp = to_julian_day(datetime.strptime(str(PTSCI_timestamps[0]), "%Y%m%d%H%M%S"))
-            logger.warning("NC_FROM_CSV", f"Profile {profile_num}: JULD not present; using last PTSCI timestamp.")
         else:
             juld_timestamp = np.nan
             logger.warning("NC_FROM_CSV", f"Profile {profile_num}: JULD not present and no PTSCI timestamps.")

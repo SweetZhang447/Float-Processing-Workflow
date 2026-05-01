@@ -672,13 +672,11 @@ def run(
         profile_num = tag[9:12]
         phy_path = os.path.join(phy_dir, f"{phy_prefix}_{profile_num}.phy")
         if os.path.exists(phy_path) and not force_reprocess:
-            logger.file_only("PHY_PARSING", f"Profile {profile_num}: already exists — skipping.")
             phy_files.append(phy_path)
             continue
         try:
             phy_path = _generate_phy_file(tag, file_list, profiles_dir, phy_dir, phy_prefix, meta_file)
             phy_files.append(phy_path)
-            logger.info("PHY_PARSING", f"Profile {profile_num}: success → {os.path.basename(phy_path)}")
         except Exception as e:
             errors.append(profile_num)
             logger.error("PHY_PARSING", f"Profile {profile_num}: {e}")
