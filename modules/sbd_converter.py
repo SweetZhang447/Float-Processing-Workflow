@@ -568,16 +568,24 @@ def _compute_start_momsn(profiles: list, all_sbd_files: list, new_sbd_basenames:
     if not profiles:
         return min_new_momsn
 
-    complete_nums = [p["prof_num"] for p in profiles if p["status"] == "complete"]
+    complete_nums = [
+        int(p["prof_num"]) for p in profiles
+        if p["status"] == "complete" and str(p["prof_num"]).isdigit()
+    ]
     last_complete = max(complete_nums) if complete_nums else None
 
     if last_complete is not None:
         incomplete_after = [
             p for p in profiles
-            if p["status"] == "incomplete" and p["prof_num"] > last_complete
+            if p["status"] == "incomplete"
+            and str(p["prof_num"]).isdigit()
+            and int(p["prof_num"]) > last_complete
         ]
     else:
-        incomplete_after = [p for p in profiles if p["status"] == "incomplete"]
+        incomplete_after = [
+            p for p in profiles
+            if p["status"] == "incomplete" and str(p["prof_num"]).isdigit()
+        ]
 
     if incomplete_after:
         min_incomplete_momsn = min(p["momsn_range"][0] for p in incomplete_after)
