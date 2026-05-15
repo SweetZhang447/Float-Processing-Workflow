@@ -57,7 +57,7 @@ from modules.logger import setup_console_logging
 from modules.sbd_downloader import build_client
 from modules.logger import FloatLogger
 from modules import sbd_downloader, sbd_converter, phy_parser
-from modules import nc_from_csv, argo_downloader, nc_from_argo
+from modules import nc_from_csv, argo_downloader, nc_from_argo, dmode_merger
 
 # ============================================================================
 # Lazy imports (deferred so --setup-gmail-auth doesn't need APScheduler etc.)
@@ -98,12 +98,18 @@ def load_config(config_path: str) -> dict:
 # Force reprocess config parser
 # ============================================================================
 
+_ALL_FLOATS_SENTINEL = "ALL"
+
+
 def _parse_force_reprocess_config(force_reprocess_cfg: object) -> set[str]:
     """
     Parse config:
       "force_reprocess": { "FLOATS": [...] }
 
-    Returns a set of float IDs to reprocess (all profiles).
+    Pass "ALL" as the only entry to reprocess every active float:
+      "force_reprocess": { "FLOATS": ["ALL"] }
+
+    Returns a set of float IDs to reprocess. The sentinel "ALL" means every float.
     """
     if force_reprocess_cfg is None:
         return set()
@@ -167,6 +173,7 @@ def _build_float_status_rows(
     argo_dl_result: dict,
     nc_argo_result: dict,
     profiles_state: list,
+    merger_result: dict,
 ) -> dict[str, dict[str, str]]:
     rows: dict[str, dict[str, str]] = {}
 
@@ -177,6 +184,7 @@ def _build_float_status_rows(
             "argo_rt_netcdf_download": "",
             "dmode_from_argo": "",
             "dmode_from_profile": "",
+            "dmode_all": "",
         })
 
     for entry in profiles_state:
@@ -211,7 +219,13 @@ def _build_float_status_rows(
         p = _profile_from_path(pth)
         if p:
             ensure_row(p)
-            rows[p]["argo_rt_netcdf_download"] = "DONE"
+            prefix = os.path.basename(pth)[0].upper()
+            if prefix == "R":
+                rows[p]["argo_rt_netcdf_download"] = "DONE RT"
+            elif prefix == "D":
+                rows[p]["argo_rt_netcdf_download"] = "DONE DMODE"
+            else:
+                rows[p]["argo_rt_netcdf_download"] = "DONE"
     for pth in argo_dl_result.get("errors", []):
         p = _profile_from_path(pth)
         if p:
@@ -229,6 +243,17 @@ def _build_float_status_rows(
             ensure_row(p)
             rows[p]["dmode_from_argo"] = "ERROR"
 
+    for p, source in merger_result.get("sources", {}).items():
+        p_norm = _norm_profile_num(p)
+        if p_norm:
+            ensure_row(p_norm)
+            rows[p_norm]["dmode_all"] = "PROFILE" if source == "PROFILE" else "RT_ARGO"
+    for p in merger_result.get("errors", []):
+        p_norm = _norm_profile_num(p)
+        if p_norm:
+            ensure_row(p_norm)
+            rows[p_norm]["dmode_all"] = "ERROR"
+
     return rows
 
 
@@ -239,6 +264,7 @@ _STATUS_HEADER = [
     "argo_RT_netcdf_file_download_status",
     "DMODE_from_argo",
     "DMODE_from_profile",
+    "DMODE_ALL",
 ]
 
 
@@ -263,6 +289,7 @@ def _read_status_csv(path: str) -> dict[str, dict[str, str]]:
                 "argo_rt_netcdf_download": row[3] if len(row) > 3 else "",
                 "dmode_from_argo":        row[4] if len(row) > 4 else "",
                 "dmode_from_profile":     row[5] if len(row) > 5 else "",
+                "dmode_all":              row[6] if len(row) > 6 else "",
             }
     return rows
 
@@ -276,10 +303,11 @@ def _update_float_status_csv(
     argo_dl_result: dict,
     nc_argo_result: dict,
     profiles_state: list,
+    merger_result: dict,
     force_reprocess: bool = False,
 ) -> None:
     new_rows = _build_float_status_rows(
-        conv_result, phy_result, nc_csv_result, argo_dl_result, nc_argo_result, profiles_state
+        conv_result, phy_result, nc_csv_result, argo_dl_result, nc_argo_result, profiles_state, merger_result
     )
     out_path = os.path.join(float_dir, f"{float_id}_master_status.csv")
     file_exists = os.path.exists(out_path)
@@ -309,6 +337,7 @@ def _update_float_status_csv(
                 row.get("argo_rt_netcdf_download", ""),
                 row.get("dmode_from_argo", ""),
                 row.get("dmode_from_profile", ""),
+                row.get("dmode_all", ""),
             ])
 
 
@@ -345,6 +374,7 @@ def _ensure_float_dirs(float_dir: str, float_id: str) -> None:
         "ARGO_RT_NETCDF_FILES",
         os.path.join("DMODE", f"{float_id}_0", f"{float_id}_0_FROM_PROFILE"),
         os.path.join("DMODE", f"{float_id}_0", f"{float_id}_0_FROM_ARGO"),
+        os.path.join("DMODE", f"{float_id}_0", f"{float_id}_0"),
     ]
     for sub in subdirs:
         os.makedirs(os.path.join(float_dir, sub), exist_ok=True)
@@ -498,6 +528,24 @@ def run_float_pipeline(
 
 
     # -------------------------------------------------------------------------
+    # Step 8: DMODE merge (FROM_PROFILE + FROM_ARGO → best-available set)
+    # -------------------------------------------------------------------------
+    nc_merged_dir = os.path.join(float_dir, "DMODE", f"{float_id}_0", f"{float_id}_0")
+
+    if _no_new_sbds and _no_new_argo_files and not force_reprocess:
+        logger.info("DMODE_MERGE", "No new files — skipping DMODE merge.")
+        logger.success("DMODE_MERGE")
+        merger_result = {"merged_files": [], "sources": {}, "errors": []}
+    else:
+        merger_result = dmode_merger.run(
+            nc_profile_dir=nc_profile_dir,
+            nc_argo_dir=nc_argo_dir,
+            nc_merged_dir=nc_merged_dir,
+            logger=logger,
+            force_reprocess=force_reprocess,
+        )
+
+    # -------------------------------------------------------------------------
     # OVERALL_SUMMARY section
     # -------------------------------------------------------------------------
     all_converted = conv_result["converted_profiles"]
@@ -531,6 +579,7 @@ def run_float_pipeline(
             argo_dl_result=argo_dl_result,
             nc_argo_result=nc_argo_result,
             profiles_state=profiles_state,
+            merger_result=merger_result,
             force_reprocess=force_reprocess,
         )
 
@@ -580,7 +629,7 @@ def run_all(config_path: str) -> None:
         float_id = float_cfg.get("float_id", "UNKNOWN")
 
         print(f"\n{'='*60}\n  Float: {float_id}\n{'='*60}")
-        force_reprocess = float_id in force_reprocess_by_float
+        force_reprocess = _ALL_FLOATS_SENTINEL in force_reprocess_by_float or float_id in force_reprocess_by_float
         had_errors = run_float_pipeline(
             float_cfg=float_cfg,
             gmail_cfg=gmail_cfg,

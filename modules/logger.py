@@ -28,6 +28,7 @@ SECTIONS = [
     "NC_FROM_CSV",
     "ARGO_DOWNLOAD",
     "NC_FROM_ARGO",
+    "DMODE_MERGE",
 ]
 
 
