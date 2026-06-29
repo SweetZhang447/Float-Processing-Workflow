@@ -1,0 +1,23 @@
+# ARGO Float Automated Processing Pipeline — runtime dependencies.
+# Only packages actually imported by workflow.py / modules/ are listed here.
+#
+# Requires Python >=3.12. (requirements.txt has no field to enforce this —
+# pip will not check it; verify with `python --version` before installing.)
+
+# --- Scheduling ---
+APScheduler>=3.11.2
+
+# --- Gmail API (OAuth2 + client) ---
+google-api-python-client>=2.184.0
+google-auth>=2.35.0
+google-auth-oauthlib>=1.2.2
+
+# --- ARGO RT download / HTML scraping ---
+requests>=2.32.3
+beautifulsoup4>=4.12.3
+
+# --- Scientific / netCDF ---
+# numpy pinned: binary-compat-sensitive foundation for netCDF4 and gsw.
+numpy==1.26.4
+netCDF4==1.7.1.post2
+gsw>=3.6.19

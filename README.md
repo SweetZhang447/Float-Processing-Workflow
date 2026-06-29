@@ -113,11 +113,10 @@ The CSV merge is field-level: on each run, only changed fields are updated. Unch
 
 ## Installation
 
-**Python 3.10+** required.
+**Python 3.12+** required.
 
 ```bash
-pip install apscheduler google-api-python-client google-auth-oauthlib \
-            netCDF4 numpy gsw scipy pandas requests beautifulsoup4
+pip install -r requirements.txt
 ```
 
 ---
