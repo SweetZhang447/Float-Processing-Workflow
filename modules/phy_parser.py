@@ -479,8 +479,6 @@ def _generate_phy_file(
 
     sorted_files = sorted(file_list, key=_sort_key)
 
-    print("print")
-
     for v in sorted_files:
         if 'meta' in v:
             _getMETAInfo(meta_file, float_dict_info)
