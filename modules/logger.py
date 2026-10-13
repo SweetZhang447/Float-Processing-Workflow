@@ -12,6 +12,7 @@ Log sections:
     NC_FROM_CSV           - .nc from profile CSV results
     ARGO_DOWNLOAD         - real-time ARGO netcdf download results
     NC_FROM_ARGO          - .nc from ARGO RT results
+    DMODE_MERGE           - merged best-available .nc set results
 """
 
 import logging

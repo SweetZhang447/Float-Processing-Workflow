@@ -283,6 +283,7 @@ Set `"broken_float": 1` in `config.json` for the affected float. This is applied
 | `modules/sbd_downloader.py` | `sbd_auto_download/dload_sbd.py` | Step 1: SBD download |
 | `modules/sbd_converter.py` | `teledyne_scripts_to_functions/` | Steps 2–3: SBD → profiles |
 | `modules/profile_validator.py` | *(new)* | Upgrades incomplete profiles to complete if data threshold is met |
+| `modules/logger.py` | *(new)* | Per-float, per-run sectioned log file and console logging |
 | `modules/phy_parser.py` | `NOAA_phy_broken_profiles.py` + `NOAA_phy_functions.py` | Step 4: `.phy` generation |
 | `modules/nc_from_csv.py` | `make_origin_nc_files.py::read_csv_files` | Step 5: `.nc` from profiles |
 | `modules/argo_downloader.py` | `make_origin_nc_files.py::download_files` | Step 6: ARGO RT download |
