@@ -393,7 +393,7 @@ def run_float_pipeline(
     force_reprocess: bool = False,
 ) -> bool:
     """
-    Run the full 7-step pipeline for one float.
+    Run the full 8-step pipeline for one float.
 
     Args:
         float_cfg:           Float config dict (from config.json floats[]).
