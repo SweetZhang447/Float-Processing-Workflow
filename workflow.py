@@ -50,6 +50,7 @@ import os
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -58,6 +59,7 @@ from modules.sbd_downloader import build_client
 from modules.logger import FloatLogger
 from modules import sbd_downloader, sbd_converter, phy_parser
 from modules import nc_from_csv, argo_downloader, nc_from_argo, dmode_merger
+from modules import sbd_archiver
 
 # ============================================================================
 # Lazy imports (deferred so --setup-gmail-auth doesn't need APScheduler etc.)
@@ -443,6 +445,12 @@ def run_float_pipeline(
         )
 
     # -------------------------------------------------------------------------
+    # Step 3b: Archive SBDs belonging to complete profiles
+    # -------------------------------------------------------------------------
+    if float_cfg.get("archive_sbd", False):
+        sbd_archiver.run(sbd_dir=sbd_dir, profiles_dir=profiles_dir, logger=logger)
+
+    # -------------------------------------------------------------------------
     # Step 4: PHY parsing (PROFILES → PHY_FILES)
     # -------------------------------------------------------------------------
     phy_dir = os.path.join(float_dir, "PHY_FILES")
@@ -624,13 +632,11 @@ def run_all(config_path: str) -> None:
     floats = [f for f in config.get("floats", []) if f.get("active", True)]
     print(f"[RUN] Processing {len(floats)} active float(s) at {run_time.strftime('%Y-%m-%dT%H:%M:%SZ')} UTC")
 
-    any_errors = False
-    for float_cfg in floats:
+    def _run_one(float_cfg: dict) -> bool:
         float_id = float_cfg.get("float_id", "UNKNOWN")
-
         print(f"\n{'='*60}\n  Float: {float_id}\n{'='*60}")
         force_reprocess = _ALL_FLOATS_SENTINEL in force_reprocess_by_float or float_id in force_reprocess_by_float
-        had_errors = run_float_pipeline(
+        return run_float_pipeline(
             float_cfg=float_cfg,
             gmail_cfg=gmail_cfg,
             output_base_dir=output_base_dir,
@@ -638,7 +644,10 @@ def run_all(config_path: str) -> None:
             gmail_client=gmail_client,
             force_reprocess=force_reprocess,
         )
-        any_errors = any_errors or had_errors
+
+    # Run floats concurrently to cut total wall-clock time
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        any_errors = any(pool.map(_run_one, floats))
 
     print(f"\n[DONE] Per-float status CSV files updated at {output_base_dir}")
 
