@@ -1,8 +1,9 @@
 """
 dmode_merger.py — Merge FROM_PROFILE and FROM_ARGO NetCDF sets.
 
-For each profile: prefer FROM_PROFILE if the file exists; fall back to
-FROM_ARGO if it doesn't. Write results to a merged output directory.
+For each profile: prefer FROM_PROFILE if the file exists and is non-empty;
+fall back to FROM_ARGO otherwise (e.g. a zero-byte .nc left by an interrupted
+Step 5 run). Write results to a merged output directory.
 """
 import os
 import shutil
@@ -35,7 +36,12 @@ def run(
     errors: list[str] = []
 
     for p in all_profiles:
-        src   = profile_files.get(p) or argo_files.get(p)
+        profile_src = profile_files.get(p)
+        if profile_src and _is_empty(profile_src):
+            logger.warning("DMODE_MERGE", f"Profile {p}: FROM_PROFILE file is empty — falling back to FROM_ARGO.")
+            profile_src = None
+
+        src   = profile_src or argo_files.get(p)
         label = "PROFILE" if p in profile_files else "RT_ARGO"
 
         if src is None:
@@ -64,6 +70,10 @@ def _nc_files(directory: str) -> list[str]:
     if not os.path.isdir(directory):
         return []
     return [os.path.join(directory, f) for f in os.listdir(directory) if f.endswith(".nc")]
+
+
+def _is_empty(path: str) -> bool:
+    return os.path.getsize(path) == 0
 
 
 def _prof_num(path: str) -> str:
