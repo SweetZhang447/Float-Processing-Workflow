@@ -16,6 +16,9 @@ google-auth-oauthlib>=1.2.2
 requests>=2.32.3
 beautifulsoup4>=4.12.3
 
+# --- Progress bars ---
+tqdm>=4.66.0
+
 # --- Scientific / netCDF ---
 # numpy pinned: binary-compat-sensitive foundation for netCDF4 and gsw.
 numpy==1.26.4
